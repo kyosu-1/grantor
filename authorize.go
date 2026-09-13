@@ -95,10 +95,11 @@ func (p *Provider) serveAuthorization(w http.ResponseWriter, r *http.Request, is
 		return
 	}
 
+	interactReq := r
 	if !p.cfg.DisableInteractionBinding {
 		binding := randomToken()
 		req.BindingHash = hashToken(binding)
-		http.SetCookie(w, &http.Cookie{
+		cookie := &http.Cookie{
 			Name:     bindingCookieName(req.ID),
 			Value:    binding,
 			Path:     "/",
@@ -106,7 +107,13 @@ func (p *Provider) serveAuthorization(w http.ResponseWriter, r *http.Request, is
 			Secure:   iss.secure,
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
-		})
+		}
+		http.SetCookie(w, cookie)
+		// The user agent only sends the cookie from its next request on.
+		// Add it to the current request too, so that Interact can approve
+		// immediately, for example when the end-user already has a session.
+		interactReq = r.Clone(r.Context())
+		interactReq.AddCookie(&http.Cookie{Name: cookie.Name, Value: cookie.Value})
 	}
 	if err := p.cfg.Storage.CreateAuthorizationRequest(r.Context(), req); err != nil {
 		p.logError(r.Context(), "save authorization request", err)
@@ -114,7 +121,7 @@ func (p *Provider) serveAuthorization(w http.ResponseWriter, r *http.Request, is
 		return
 	}
 	reqCopy := *req
-	p.cfg.Interact(w, r, &reqCopy)
+	p.cfg.Interact(w, interactReq, &reqCopy)
 }
 
 // authorizationTarget authenticates the client_id and redirect_uri of an

@@ -1,0 +1,19 @@
+{{template "head" "Authorize"}}
+<h1>Authorize access</h1>
+<p class="sub"><code>{{.Request.ClientID}}</code> is requesting access to your account.</p>
+<form method="post" action="/consent">
+  <input type="hidden" name="id" value="{{.Request.ID}}">
+  <div class="scopes">
+  {{range .Request.Scopes}}
+    <label>
+      {{if eq . "openid"}}<input type="checkbox" checked disabled>{{else}}<input type="checkbox" name="scope_{{.}}" checked>{{end}}
+      <code>{{.}}</code>
+    </label>
+  {{end}}
+  </div>
+  <div class="actions">
+    <button type="submit" name="action" value="deny">Deny</button>
+    <button type="submit" name="action" value="allow" class="primary">Allow</button>
+  </div>
+</form>
+{{template "foot"}}

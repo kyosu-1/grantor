@@ -1,0 +1,17 @@
+{{template "head" "Sign in"}}
+<h1>Sign in</h1>
+<p class="sub"><code>{{.Request.ClientID}}</code> wants you to sign in.</p>
+{{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+<form method="post" action="/login">
+  <input type="hidden" name="id" value="{{.Request.ID}}">
+  <label for="username">Username</label>
+  <input type="text" id="username" name="username" value="{{.LoginHint}}" autocomplete="username" autofocus required>
+  <label for="password">Password</label>
+  <input type="password" id="password" name="password" autocomplete="current-password" required>
+  <div class="actions">
+    <button type="submit" name="action" value="cancel" formnovalidate>Cancel</button>
+    <button type="submit" name="action" value="login" class="primary">Sign in</button>
+  </div>
+</form>
+<p class="sub" style="margin-top:1.5rem">Demo accounts: <code>alice</code> / <code>bob</code>, password <code>password</code>.</p>
+{{template "foot"}}

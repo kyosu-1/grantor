@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -425,6 +426,21 @@ func TestInteractionBinding(t *testing.T) {
 	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
 		t.Fatalf("second Approve = %v", err)
 	}
+
+	// Interact can approve within the authorization request itself, before
+	// the user agent has stored the binding cookie.
+	e.interact = func(w http.ResponseWriter, r *http.Request, req *grantor.AuthorizationRequest) {
+		if err := e.p.Approve(w, r, req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
+			t.Errorf("Approve inside Interact: %v", err)
+		}
+	}
+	fresh, _ := cookiejar.New(nil)
+	e.jar = fresh
+	rec := e.get(grantor.PathAuthorization, authParams(publicClient, "openid", newPKCE()))
+	if p := redirectParams(t, rec); p.Get("code") == "" {
+		t.Fatalf("immediate approval = %v", p)
+	}
+	e.interact = nil
 
 	req = e.startAuthorization(authParams(publicClient, "openid", newPKCE()))
 	e.clock.Advance(16 * time.Minute)
