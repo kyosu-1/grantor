@@ -48,7 +48,7 @@ func (p *Provider) serveIntrospection(w http.ResponseWriter, r *http.Request, is
 	}
 	active := t.Issuer == iss.url &&
 		p.now().Before(t.ExpiresAt) &&
-		(t.Type == TokenTypeAccessToken || (t.Type == TokenTypeRefreshToken && t.ConsumedAt.IsZero())) &&
+		(t.Kind == TokenKindAccessToken || (t.Kind == TokenKindRefreshToken && t.ConsumedAt.IsZero())) &&
 		(t.ClientID == client.ID || client.AllowIntrospection)
 	if !active {
 		writeJSON(w, http.StatusOK, inactive)
@@ -83,7 +83,7 @@ func (p *Provider) serveIntrospection(w http.ResponseWriter, r *http.Request, is
 	if t.Subject != "" {
 		resp["sub"] = t.Subject
 	}
-	if t.Type == TokenTypeAccessToken {
+	if t.Kind == TokenKindAccessToken {
 		resp["token_type"] = "Bearer"
 	}
 	writeJSON(w, http.StatusOK, resp)

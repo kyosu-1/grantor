@@ -13,18 +13,19 @@ import (
 
 // Default endpoint paths, relative to the issuer URL. See [Endpoints].
 const (
-	PathAuthorization = "/authorize"
-	PathToken         = "/token"
-	PathUserInfo      = "/userinfo"
-	PathIntrospection = "/introspect"
-	PathRevocation    = "/revoke"
-	PathJWKS          = "/jwks"
-	PathOpenIDConfig  = "/.well-known/openid-configuration"
+	PathAuthorization       = "/authorize"
+	PathToken               = "/token"
+	PathUserInfo            = "/userinfo"
+	PathIntrospection       = "/introspect"
+	PathRevocation          = "/revoke"
+	PathJWKS                = "/jwks"
+	PathOpenIDConfiguration = "/.well-known/openid-configuration"
 )
 
-// pathOAuthMetadata is the RFC 8414 metadata path. For issuers with a path
-// component, the issuer path is appended to it rather than prepended.
-const pathOAuthMetadata = "/.well-known/oauth-authorization-server"
+// PathAuthorizationServerMetadata is the RFC 8414 metadata path. For issuers
+// with a path component, the issuer path is appended to it rather than
+// prepended: https://id.example.com/.well-known/oauth-authorization-server/tenant.
+const PathAuthorizationServerMetadata = "/.well-known/oauth-authorization-server"
 
 // Issuer is the configuration of a single issuer (tenant).
 type Issuer struct {
@@ -282,7 +283,7 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *Provider) route(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer) {
 	path := r.URL.EscapedPath()
-	if path == pathOAuthMetadata+iss.basePath {
+	if path == PathAuthorizationServerMetadata+iss.basePath {
 		p.serveDiscovery(w, r, iss)
 		return
 	}
@@ -305,7 +306,7 @@ func (p *Provider) route(w http.ResponseWriter, r *http.Request, iss *resolvedIs
 		p.serveRevocation(w, r, iss)
 	case e.JWKS:
 		p.serveJWKS(w, r, iss)
-	case PathOpenIDConfig:
+	case PathOpenIDConfiguration:
 		p.serveDiscovery(w, r, iss)
 	default:
 		http.NotFound(w, r)
@@ -367,7 +368,7 @@ func defaultErrorPage(w http.ResponseWriter, _ *http.Request, err *Error) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(err.statusCode())
+	w.WriteHeader(err.HTTPStatus())
 	fmt.Fprintln(w, err.Code)
 	if err.Description != "" {
 		fmt.Fprintln(w, sanitizeDescription(err.Description))

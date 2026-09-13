@@ -106,13 +106,14 @@ func (r *AuthorizationRequest) needsAuthentication(authTime, now time.Time) bool
 	return false
 }
 
-// TokenType is the kind of a stored token.
-type TokenType string
+// TokenKind is the kind of a stored token. It is not the token_type of a
+// token response.
+type TokenKind string
 
 const (
-	TokenTypeAuthorizationCode TokenType = "authorization_code"
-	TokenTypeAccessToken       TokenType = "access_token"
-	TokenTypeRefreshToken      TokenType = "refresh_token"
+	TokenKindAuthorizationCode TokenKind = "authorization_code"
+	TokenKindAccessToken       TokenKind = "access_token"
+	TokenKindRefreshToken      TokenKind = "refresh_token"
 )
 
 // Token is a stored authorization code, access token or refresh token.
@@ -124,7 +125,7 @@ type Token struct {
 	// Hash is the SHA-256 hash of the token value. The value itself is never
 	// stored.
 	Hash    string    `json:"hash"`
-	Type    TokenType `json:"type"`
+	Kind    TokenKind `json:"kind"`
 	GrantID string    `json:"grant_id"`
 	Issuer  string    `json:"issuer"`
 

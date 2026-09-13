@@ -318,7 +318,7 @@ func TestResponseModes(t *testing.T) {
 	q.Set("response_mode", "form_post")
 	q.Set("state", `"><script>alert(1)</script>`)
 	req = e.startAuthorization(q)
-	rec, _ = e.deny(req, grantor.ErrAccessDenied)
+	rec, _ = e.deny(req, &grantor.Error{Code: grantor.CodeAccessDenied})
 	if strings.Contains(rec.Body.String(), "<script>alert") {
 		t.Fatalf("form_post does not escape state: %s", rec.Body.String())
 	}
@@ -335,14 +335,14 @@ func TestPromptAndMaxAge(t *testing.T) {
 		if !req.HasPrompt("none") {
 			t.Fatalf("prompt = %v", req.Prompt)
 		}
-		rec, err := e.deny(req, grantor.ErrLoginRequired)
+		rec, err := e.deny(req, &grantor.Error{Code: grantor.CodeLoginRequired})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if p := redirectParams(t, rec); p.Get("error") != "login_required" || p.Get("state") != "xyz" {
 			t.Fatalf("deny = %v", p)
 		}
-		if _, err := e.deny(req, grantor.ErrLoginRequired); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
+		if _, err := e.deny(req, &grantor.Error{Code: grantor.CodeLoginRequired}); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
 			t.Fatalf("second deny = %v", err)
 		}
 	})
@@ -541,19 +541,19 @@ func TestMultipleIssuers(t *testing.T) {
 	}
 	for _, iss := range issuers {
 		store.SetClient(iss.URL, grantor.Client{
-			ID: "app", SecretHash: grantor.HashSecret(confidentialSecret),
+			ID: "app", SecretHash: grantor.HashClientSecret(confidentialSecret),
 			RedirectURIs: []string{clientRedirect}, Scopes: []string{"openid"}, PKCE: grantor.PKCEOptional,
 		})
 	}
 
 	rec := httptest.NewRecorder()
-	p.ServeHTTP(rec, httpGet("https://c.example.com"+grantor.PathOpenIDConfig))
+	p.ServeHTTP(rec, httpGet("https://c.example.com"+grantor.PathOpenIDConfiguration))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown issuer = %d", rec.Code)
 	}
 
 	rec = httptest.NewRecorder()
-	p.ServeHTTP(rec, httpGet("https://b.example.com"+grantor.PathOpenIDConfig))
+	p.ServeHTTP(rec, httpGet("https://b.example.com"+grantor.PathOpenIDConfiguration))
 	var m map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &m)
 	if m["issuer"] != "https://b.example.com" {

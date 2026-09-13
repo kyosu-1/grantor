@@ -196,7 +196,7 @@ func (a *App) continueRequest(w http.ResponseWriter, r *http.Request, req *grant
 		(req.HasPrompt("select_account") && s.authTime.Before(req.CreatedAt))
 	if loginNeeded {
 		if req.HasPrompt("none") {
-			a.deny(w, r, req, grantor.ErrLoginRequired)
+			a.deny(w, r, req, &grantor.Error{Code: grantor.CodeLoginRequired})
 			return
 		}
 		http.Redirect(w, r, "/login?id="+url.QueryEscape(req.ID), http.StatusFound)
@@ -213,7 +213,7 @@ func (a *App) continueRequest(w http.ResponseWriter, r *http.Request, req *grant
 	decided := ok && containsAll(previous.asked, consentItems(req))
 	if !decided || req.HasPrompt("consent") {
 		if req.HasPrompt("none") {
-			a.deny(w, r, req, grantor.ErrConsentRequired)
+			a.deny(w, r, req, &grantor.Error{Code: grantor.CodeConsentRequired})
 			return
 		}
 		a.render(w, "consent.html", map[string]any{"Request": req, "Claims": req.Claims.Names()})
@@ -250,7 +250,7 @@ func (a *App) submitLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PostFormValue("action") == "cancel" {
-		a.deny(w, r, req, grantor.ErrAccessDenied)
+		a.deny(w, r, req, &grantor.Error{Code: grantor.CodeAccessDenied})
 		return
 	}
 
@@ -285,7 +285,7 @@ func (a *App) submitConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PostFormValue("action") != "allow" {
-		a.deny(w, r, req, grantor.ErrAccessDenied)
+		a.deny(w, r, req, &grantor.Error{Code: grantor.CodeAccessDenied})
 		return
 	}
 	var granted []string
@@ -398,7 +398,7 @@ func (a *App) renderStatus(w http.ResponseWriter, status int, name string, data 
 // errorPage renders authorization errors that cannot be sent to the client,
 // such as an unregistered redirect URI.
 func (a *App) errorPage(w http.ResponseWriter, _ *http.Request, err *grantor.Error) {
-	a.renderStatus(w, http.StatusBadRequest, "error.html", map[string]any{
+	a.renderStatus(w, err.HTTPStatus(), "error.html", map[string]any{
 		"Message": "The sign-in request is invalid: " + err.Code + ". " + err.Description,
 	})
 }

@@ -13,7 +13,7 @@ const (
 
 	ClientID = "demo-rp"
 	// ClientSecret is public because this is an example. Generate real
-	// secrets with grantor.GenerateSecret.
+	// secrets with grantor.GenerateClientSecret.
 	ClientSecret = "demo-rp-secret-Qm9vZ2llLVdvb2dpZS1CYXJuYWNsZS0yMDI2"
 )
 
@@ -22,7 +22,7 @@ func Clients(relyingPartyURL string) []grantor.Client {
 	return []grantor.Client{
 		{
 			ID:           ClientID,
-			SecretHash:   grantor.HashSecret(ClientSecret),
+			SecretHash:   grantor.HashClientSecret(ClientSecret),
 			RedirectURIs: []string{relyingPartyURL + "/callback"},
 			GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 			Scopes:       []string{"openid", "profile", "email", "phone", "offline_access"},

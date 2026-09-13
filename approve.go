@@ -145,7 +145,7 @@ func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, req *Authoriz
 	code := randomToken()
 	t := &Token{
 		Hash:                 hashToken(code),
-		Type:                 TokenTypeAuthorizationCode,
+		Kind:                 TokenKindAuthorizationCode,
 		GrantID:              randomToken(),
 		Issuer:               iss.url,
 		ClientID:             req.ClientID,
@@ -176,16 +176,17 @@ func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, req *Authoriz
 }
 
 // Deny completes an authorization request and redirects the user agent back
-// to the client with an error, such as [ErrAccessDenied] or, for
-// prompt=none requests, [ErrLoginRequired]. Extension error codes can be
-// sent with a custom *Error, including its Description and URI. req is
-// either an unsaved request from ParseAuthorizationRequest or a saved
-// request from AuthorizationRequest.
+// to the client with an error, for example
+// &grantor.Error{Code: grantor.CodeAccessDenied} or, for prompt=none
+// requests, CodeLoginRequired. A nil reason sends access_denied. Extension
+// error codes can be sent with a custom Description and URI. req is either
+// an unsaved request from ParseAuthorizationRequest or a saved request from
+// AuthorizationRequest.
 //
 // If Deny returns an error, nothing has been written to w.
 func (p *Provider) Deny(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest, reason *Error) error {
 	if reason == nil {
-		reason = ErrAccessDenied
+		reason = &Error{Code: CodeAccessDenied}
 	}
 	if !validErrorCode(reason.Code) {
 		return fmt.Errorf("grantor: %q is not a valid error code", reason.Code)

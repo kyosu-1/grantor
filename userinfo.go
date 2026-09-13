@@ -33,7 +33,7 @@ func (p *Provider) serveUserInfo(w http.ResponseWriter, r *http.Request, iss *re
 		p.writeBearerError(w, r, errServer(err))
 		return
 	}
-	if err != nil || t.Type != TokenTypeAccessToken || t.Issuer != iss.url || !p.now().Before(t.ExpiresAt) {
+	if err != nil || t.Kind != TokenKindAccessToken || t.Issuer != iss.url || !p.now().Before(t.ExpiresAt) {
 		p.writeBearerError(w, r, newError(CodeInvalidToken, "the access token is invalid or expired"))
 		return
 	}
@@ -118,5 +118,5 @@ func (p *Provider) writeBearerError(w http.ResponseWriter, r *http.Request, e *E
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	writeJSON(w, e.statusCode(), map[string]string{"error": e.Code})
+	writeJSON(w, e.HTTPStatus(), map[string]string{"error": e.Code})
 }

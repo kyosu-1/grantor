@@ -91,7 +91,7 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 		// SaveAuthorizationRequest when it needs a login page.
 		user := req.LoginHint
 		if user == "" || disabledUsers[user] {
-			if err := provider.Deny(w, r, req, grantor.ErrAccessDenied); err != nil {
+			if err := provider.Deny(w, r, req, &grantor.Error{Code: grantor.CodeAccessDenied}); err != nil {
 				logger.ErrorContext(r.Context(), "deny", "error", err)
 				http.Error(w, "unable to complete the request", http.StatusInternalServerError)
 			}

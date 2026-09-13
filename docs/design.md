@@ -87,7 +87,7 @@ Refresh tokens are issued when the client may use the refresh token grant and, f
 
 OAuth 2.1 §2.4.1 requires protecting endpoints that accept client secrets against brute force. grantor does not rate-limit; wrap the provider with rate-limiting middleware for the token, introspection and revocation endpoints.
 
-Client secrets are stored as SHA-256 hashes and compared in constant time. This is sound only for high-entropy secrets, which `GenerateSecret` produces; it avoids a password-hashing dependency.
+Client secrets are stored as SHA-256 hashes and compared in constant time. This is sound only for high-entropy secrets, which `GenerateClientSecret` produces; it avoids a password-hashing dependency.
 
 ### PKCE
 

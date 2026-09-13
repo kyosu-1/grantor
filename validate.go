@@ -22,7 +22,7 @@ func (p *Provider) ValidateAccessToken(r *http.Request, token string) (*Token, e
 	if err != nil {
 		return nil, fmt.Errorf("grantor: look up access token: %w", err)
 	}
-	if t.Type != TokenTypeAccessToken || t.Issuer != iss.url || !p.now().Before(t.ExpiresAt) {
+	if t.Kind != TokenKindAccessToken || t.Issuer != iss.url || !p.now().Before(t.ExpiresAt) {
 		return nil, ErrNotFound
 	}
 	return t, nil

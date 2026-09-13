@@ -15,7 +15,7 @@ import (
 
 func TestDiscovery(t *testing.T) {
 	e := newEnv(t)
-	for _, path := range []string{grantor.PathOpenIDConfig, "/.well-known/oauth-authorization-server"} {
+	for _, path := range []string{grantor.PathOpenIDConfiguration, "/.well-known/oauth-authorization-server"} {
 		rec := e.get(path, nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s = %d", path, rec.Code)
@@ -57,7 +57,7 @@ func TestRFC8414MetadataPathForIssuerWithPath(t *testing.T) {
 	if rec := e.do(req); rec.Code != http.StatusOK || decodeJSON(t, rec)["token_endpoint"] != "https://op.example.com/tenant-a/token" {
 		t.Fatalf("RFC 8414 metadata = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := e.get(grantor.PathOpenIDConfig, nil); rec.Code != http.StatusOK {
+	if rec := e.get(grantor.PathOpenIDConfiguration, nil); rec.Code != http.StatusOK {
 		t.Fatalf("OIDC discovery = %d", rec.Code)
 	}
 }

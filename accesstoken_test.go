@@ -19,7 +19,7 @@ func TestApprovalAudienceMustBeRegistered(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "api-client", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "api-client", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect}, Scopes: []string{"openid", "api"},
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Audience:   []string{"https://a.example.com", "https://b.example.com"}, PKCE: grantor.PKCEOptional,
@@ -78,7 +78,7 @@ func TestJWTAccessToken(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "jwt-at", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "jwt-at", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect}, Scopes: []string{"openid", "api", "offline_access"},
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Audience:   []string{"https://api.example.com"}, AccessTokenFormat: grantor.AccessTokenFormatJWT,
@@ -117,7 +117,7 @@ func TestJWTAccessTokenForClientCredentials(t *testing.T) {
 	e := newEnv(t, func(c *grantor.Config) { c.AccessTokenFormat = grantor.AccessTokenFormatJWT })
 	e.registerClients()
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "jwt-service", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "jwt-service", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials}, Scopes: []string{"api"},
 		Audience: []string{"https://api.example.com"},
 	})
@@ -141,7 +141,7 @@ func TestJWTAccessTokenNeedsAudience(t *testing.T) {
 	expectError(t, status, body, http.StatusInternalServerError, "server_error")
 
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "jwt-service", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "jwt-service", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials}, Scopes: []string{"api"},
 		Audience: []string{"https://api.example.com"},
 	})
@@ -164,7 +164,7 @@ func TestAccessTokenClientValidation(t *testing.T) {
 		"negative lifetime":    {RefreshTokenLifetime: -time.Hour},
 	} {
 		c.ID = "misconfigured"
-		c.SecretHash = grantor.HashSecret(confidentialSecret)
+		c.SecretHash = grantor.HashClientSecret(confidentialSecret)
 		c.GrantTypes = []grantor.GrantType{grantor.GrantTypeClientCredentials}
 		c.Scopes = []string{"api"}
 		e.store.SetClient(testIssuer, c)
@@ -179,12 +179,12 @@ func TestAccessTokenFormatSelection(t *testing.T) {
 	e := newEnv(t, func(c *grantor.Config) { c.AccessTokenFormat = grantor.AccessTokenFormatJWT })
 	e.registerClients()
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "opaque-client", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "opaque-client", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials}, Scopes: []string{"api"},
 		AccessTokenFormat: grantor.AccessTokenFormatOpaque, Audience: []string{"https://api.example.com"},
 	})
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: serviceClient, SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: serviceClient, SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials}, Scopes: []string{"api"},
 		Audience: []string{"https://api.example.com"},
 	})
@@ -245,7 +245,7 @@ func TestCustomAccessTokenFormats(t *testing.T) {
 	}
 	for format, check := range checks {
 		e.store.SetClient(testIssuer, grantor.Client{
-			ID: "custom", SecretHash: grantor.HashSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
+			ID: "custom", SecretHash: grantor.HashClientSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
 			Scopes: []string{"openid", "api"}, AccessTokenFormat: format, PKCE: grantor.PKCEOptional,
 			Audience: []string{"https://api.example.com"},
 		})
@@ -269,7 +269,7 @@ func TestCustomAccessTokenFormats(t *testing.T) {
 	// Access tokens typed like ID tokens are refused.
 	for _, format := range []grantor.AccessTokenFormat{"jwt-typ", "media-type-typ", "empty-typ"} {
 		e.store.SetClient(testIssuer, grantor.Client{
-			ID: "untyped", SecretHash: grantor.HashSecret(confidentialSecret),
+			ID: "untyped", SecretHash: grantor.HashClientSecret(confidentialSecret),
 			GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials}, Scopes: []string{"api"},
 			AccessTokenFormat: format, Audience: []string{"https://api.example.com"},
 		})
@@ -278,14 +278,14 @@ func TestCustomAccessTokenFormats(t *testing.T) {
 	}
 
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "unknown-format", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "unknown-format", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials}, AccessTokenFormat: "paseto",
 	})
 	status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}}, basic("unknown-format", confidentialSecret))
 	expectError(t, status, body, http.StatusInternalServerError, "server_error")
 
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "no-key", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "no-key", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes:        []grantor.GrantType{grantor.GrantTypeClientCredentials},
 		AccessTokenFormat: grantor.AccessTokenFormatJWT, AccessTokenSigningAlg: "ES512",
 		Audience: []string{"https://api.example.com"},
@@ -298,7 +298,7 @@ func TestIssuanceClaimsAudienceAndLifetimes(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "rich", SecretHash: grantor.HashSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
+		ID: "rich", SecretHash: grantor.HashClientSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Scopes:     []string{"openid", "api", "offline_access"}, Audience: []string{"https://a.example.com", "https://b.example.com"},
 		AccessTokenFormat: grantor.AccessTokenFormatJWT, RefreshTokenLifetime: time.Hour, IDTokenLifetime: 10 * time.Minute,
@@ -381,7 +381,7 @@ func TestIntrospectionAudienceAndClaims(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "api-client", SecretHash: grantor.HashSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
+		ID: "api-client", SecretHash: grantor.HashClientSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Scopes:     []string{"openid", "api", "offline_access"}, Audience: []string{"https://a.example.com", "https://b.example.com"},
 		PKCE: grantor.PKCEOptional,
@@ -421,7 +421,7 @@ func TestValidateAccessToken(t *testing.T) {
 	body := e.tokensFor(confidentialClient, "openid offline_access")
 	r := httpGet(testIssuer + "/api")
 	got, err := e.p.ValidateAccessToken(r, body["access_token"].(string))
-	if err != nil || got.Subject != "alice" || got.Type != grantor.TokenTypeAccessToken {
+	if err != nil || got.Subject != "alice" || got.Kind != grantor.TokenKindAccessToken {
 		t.Fatalf("ValidateAccessToken = %+v, %v", got, err)
 	}
 	if _, err := e.p.ValidateAccessToken(r, body["refresh_token"].(string)); !errors.Is(err, grantor.ErrNotFound) {
@@ -467,7 +467,7 @@ func TestIssuanceFailureKeepsGrant(t *testing.T) {
 		}
 	})
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "flaky", SecretHash: grantor.HashSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
+		ID: "flaky", SecretHash: grantor.HashClientSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Scopes:     []string{"openid", "api", "offline_access"}, AccessTokenFormat: "flaky", PKCE: grantor.PKCEOptional,
 	})
@@ -507,7 +507,7 @@ func TestGrantAudienceRecheckedAgainstClient(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
 	client := grantor.Client{
-		ID: "api-client", SecretHash: grantor.HashSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
+		ID: "api-client", SecretHash: grantor.HashClientSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Scopes:     []string{"openid", "api", "offline_access"}, Audience: []string{"https://a.example.com", "https://b.example.com"},
 		PKCE: grantor.PKCEOptional,
@@ -556,7 +556,7 @@ func TestIssuedTokenIsolation(t *testing.T) {
 		}
 	})
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "meddling", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "meddling", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials}, Scopes: []string{"api"},
 		AccessTokenFormat: "meddling", Audience: []string{"https://api.example.com"},
 	})
@@ -588,7 +588,7 @@ func TestCustomGrantAudience(t *testing.T) {
 		}
 	})
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "cli", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "cli", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{apiKeyGrant}, Scopes: []string{"api"},
 		Audience: []string{"https://a.example.com", "https://b.example.com"},
 	})
@@ -625,7 +625,7 @@ func TestValidateAccessTokenOfOtherIssuer(t *testing.T) {
 	}
 	for _, iss := range issuers {
 		store.SetClient(iss.URL, grantor.Client{
-			ID: "service", SecretHash: grantor.HashSecret(confidentialSecret),
+			ID: "service", SecretHash: grantor.HashClientSecret(confidentialSecret),
 			GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials}, Scopes: []string{"api"},
 		})
 	}

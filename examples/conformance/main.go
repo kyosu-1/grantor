@@ -44,7 +44,7 @@ func main() {
 		return grantor.Client{
 			ID:           id,
 			AuthMethod:   method,
-			SecretHash:   grantor.HashSecret(secret),
+			SecretHash:   grantor.HashClientSecret(secret),
 			RedirectURIs: []string{redirectURI},
 			GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 			Scopes:       []string{"openid", "profile", "email", "address", "phone", "offline_access"},

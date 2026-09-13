@@ -38,12 +38,12 @@ func (p *Provider) serveRevocation(w http.ResponseWriter, r *http.Request, iss *
 	case err != nil:
 		p.WriteTokenError(w, r, errServer(err))
 		return
-	case t.Issuer != iss.url || t.Type == TokenTypeAuthorizationCode:
+	case t.Issuer != iss.url || t.Kind == TokenKindAuthorizationCode:
 		// Treated like an unknown token.
 	case t.ClientID != client.ID:
 		p.WriteTokenError(w, r, newError(CodeUnauthorizedClient, "the token was not issued to this client"))
 		return
-	case t.Type == TokenTypeRefreshToken:
+	case t.Kind == TokenKindRefreshToken:
 		// Revoking a refresh token also invalidates the access tokens of the
 		// same grant (RFC 7009 section 2.1).
 		err = p.cfg.Storage.RevokeGrant(r.Context(), t.GrantID)

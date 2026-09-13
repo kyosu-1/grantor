@@ -37,7 +37,7 @@ func TestTypedNilErrors(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "cli", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "cli", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{apiKeyGrant}, Scopes: []string{"api"},
 	})
 	e.p = mustProvider(t, e, func(c *grantor.Config) {
@@ -115,7 +115,7 @@ func TestIssueTokensOutsideExchange(t *testing.T) {
 		t.Error("IssueTokens accepted a built-in grant type")
 	}
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "cli", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "cli", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{apiKeyGrant}, Scopes: []string{"openid", "api"},
 	})
 	e.p = mustProvider(t, e, func(c *grantor.Config) {
@@ -144,7 +144,7 @@ func TestIssueTokensOutsideExchange(t *testing.T) {
 }
 
 func TestErrorStatusCodeOutOfRange(t *testing.T) {
-	if got := grantor.StatusCodeOf(&grantor.Error{Code: grantor.CodeInvalidGrant, StatusCode: 42}); got != http.StatusBadRequest {
+	if got := (&grantor.Error{Code: grantor.CodeInvalidGrant, StatusCode: 42}).HTTPStatus(); got != http.StatusBadRequest {
 		t.Fatalf("status = %d", got)
 	}
 }
@@ -177,7 +177,7 @@ func TestBeforeIssueRules(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "cli", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "cli", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{apiKeyGrant}, Scopes: []string{"api"},
 	})
 	var seen []grantor.GrantType
@@ -210,10 +210,10 @@ func TestDenyAfterRegistrationChange(t *testing.T) {
 	e.registerClients()
 	req := e.startAuthorization(authParams(confidentialClient, "openid email", pkcePair{}))
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: confidentialClient, SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: confidentialClient, SecretHash: grantor.HashClientSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect}, Scopes: []string{"openid"}, PKCE: grantor.PKCEOptional,
 	})
-	rec, err := e.deny(req, grantor.ErrAccessDenied)
+	rec, err := e.deny(req, &grantor.Error{Code: grantor.CodeAccessDenied})
 	if err != nil {
 		t.Fatalf("Deny: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestExtraLimits(t *testing.T) {
 func TestClientWithUnknownGrantType(t *testing.T) {
 	e := newEnv(t)
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "typo", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "typo", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{"client_credential"}, Scopes: []string{"api"},
 	})
 	status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}}, basic("typo", confidentialSecret))

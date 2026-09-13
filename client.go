@@ -82,8 +82,8 @@ type Client struct {
 	AuthMethod AuthMethod
 
 	// SecretHash is the SHA-256 hash of the client secret, as returned by
-	// [HashSecret]. Only hashes are stored, so secrets must be high-entropy
-	// values such as those returned by [GenerateSecret].
+	// [HashClientSecret]. Only hashes are stored, so secrets must be high-entropy
+	// values such as those returned by [GenerateClientSecret].
 	SecretHash []byte
 
 	// JWKS is the client's JSON Web Key Set, used to verify private_key_jwt
@@ -137,14 +137,14 @@ type Client struct {
 	IDTokenLifetime      time.Duration
 }
 
-// HashSecret returns the value to store in [Client.SecretHash].
-func HashSecret(secret string) []byte {
+// HashClientSecret returns the value to store in [Client.SecretHash].
+func HashClientSecret(secret string) []byte {
 	sum := sha256.Sum256([]byte(secret))
 	return sum[:]
 }
 
-// GenerateSecret returns a new random client secret with 256 bits of entropy.
-func GenerateSecret() string {
+// GenerateClientSecret returns a new random client secret with 256 bits of entropy.
+func GenerateClientSecret() string {
 	return randomToken()
 }
 
@@ -204,7 +204,7 @@ func (c *Client) verifySecret(secret string) bool {
 	if len(c.SecretHash) != sha256.Size {
 		return false
 	}
-	return subtle.ConstantTimeCompare(HashSecret(secret), c.SecretHash) == 1
+	return subtle.ConstantTimeCompare(HashClientSecret(secret), c.SecretHash) == 1
 }
 
 // validate checks that a client returned by the ClientStore is well formed.

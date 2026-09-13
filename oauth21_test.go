@@ -16,7 +16,7 @@ func (e *env) registerPKCEClients() {
 	} {
 		e.store.SetClient(e.issuer, grantor.Client{
 			ID:           id,
-			SecretHash:   grantor.HashSecret(confidentialSecret),
+			SecretHash:   grantor.HashClientSecret(confidentialSecret),
 			RedirectURIs: []string{clientRedirect},
 			Scopes:       []string{"openid", "api"},
 			PKCE:         policy,

@@ -88,11 +88,11 @@ func fullAuthorizationRequest() *grantor.AuthorizationRequest {
 	}
 }
 
-func fullToken(typ grantor.TokenType, grantID string) *grantor.Token {
+func fullToken(typ grantor.TokenKind, grantID string) *grantor.Token {
 	n := now()
 	return &grantor.Token{
 		Hash:                 randomID(),
-		Type:                 typ,
+		Kind:                 typ,
 		GrantID:              grantID,
 		Issuer:               "https://issuer.example.com",
 		ClientID:             "client-1",
@@ -174,7 +174,7 @@ func testAuthorizationRequestDeleteOnce(t *testing.T, s grantor.Storage) {
 
 func testTokenRoundTrip(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
-	for _, typ := range []grantor.TokenType{grantor.TokenTypeAuthorizationCode, grantor.TokenTypeAccessToken, grantor.TokenTypeRefreshToken} {
+	for _, typ := range []grantor.TokenKind{grantor.TokenKindAuthorizationCode, grantor.TokenKindAccessToken, grantor.TokenKindRefreshToken} {
 		want := fullToken(typ, randomID())
 		if err := s.CreateToken(ctx, want); err != nil {
 			t.Fatalf("CreateToken(%s): %v", typ, err)
@@ -189,7 +189,7 @@ func testTokenRoundTrip(t *testing.T, s grantor.Storage) {
 	// Minimal tokens, such as client credentials access tokens, keep their
 	// zero values.
 	minimal := &grantor.Token{
-		Hash: randomID(), Type: grantor.TokenTypeAccessToken, GrantID: randomID(),
+		Hash: randomID(), Kind: grantor.TokenKindAccessToken, GrantID: randomID(),
 		Issuer: "https://issuer.example.com", ClientID: "client-1",
 		CreatedAt: now(), ExpiresAt: now().Add(time.Hour),
 	}
@@ -205,7 +205,7 @@ func testTokenRoundTrip(t *testing.T, s grantor.Storage) {
 
 func testTokenConflict(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
-	tok := fullToken(grantor.TokenTypeAccessToken, randomID())
+	tok := fullToken(grantor.TokenKindAccessToken, randomID())
 	if err := s.CreateToken(ctx, tok); err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
@@ -232,7 +232,7 @@ func testTokenNotFound(t *testing.T, s grantor.Storage) {
 
 func testConsumeToken(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
-	tok := fullToken(grantor.TokenTypeAuthorizationCode, randomID())
+	tok := fullToken(grantor.TokenKindAuthorizationCode, randomID())
 	if err := s.CreateToken(ctx, tok); err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
@@ -264,7 +264,7 @@ func testConsumeToken(t *testing.T, s grantor.Storage) {
 
 func testConsumeTokenConcurrently(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
-	tok := fullToken(grantor.TokenTypeRefreshToken, randomID())
+	tok := fullToken(grantor.TokenKindRefreshToken, randomID())
 	if err := s.CreateToken(ctx, tok); err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
@@ -294,8 +294,8 @@ func testConsumeTokenConcurrently(t *testing.T, s grantor.Storage) {
 func testRevokeToken(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
 	grantID := randomID()
-	a := fullToken(grantor.TokenTypeAccessToken, grantID)
-	b := fullToken(grantor.TokenTypeRefreshToken, grantID)
+	a := fullToken(grantor.TokenKindAccessToken, grantID)
+	b := fullToken(grantor.TokenKindRefreshToken, grantID)
 	for _, tok := range []*grantor.Token{a, b} {
 		if err := s.CreateToken(ctx, tok); err != nil {
 			t.Fatalf("CreateToken: %v", err)
@@ -316,11 +316,11 @@ func testRevokeGrant(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
 	grantID := randomID()
 	revoked := []*grantor.Token{
-		fullToken(grantor.TokenTypeAuthorizationCode, grantID),
-		fullToken(grantor.TokenTypeAccessToken, grantID),
-		fullToken(grantor.TokenTypeRefreshToken, grantID),
+		fullToken(grantor.TokenKindAuthorizationCode, grantID),
+		fullToken(grantor.TokenKindAccessToken, grantID),
+		fullToken(grantor.TokenKindRefreshToken, grantID),
 	}
-	other := fullToken(grantor.TokenTypeAccessToken, randomID())
+	other := fullToken(grantor.TokenKindAccessToken, randomID())
 	for _, tok := range append(revoked, other) {
 		if err := s.CreateToken(ctx, tok); err != nil {
 			t.Fatalf("CreateToken: %v", err)
@@ -331,10 +331,10 @@ func testRevokeGrant(t *testing.T, s grantor.Storage) {
 	}
 	for _, tok := range revoked {
 		if _, err := s.Token(ctx, tok.Hash); !errors.Is(err, grantor.ErrNotFound) {
-			t.Fatalf("Token(%s) after RevokeGrant = %v, want ErrNotFound", tok.Type, err)
+			t.Fatalf("Token(%s) after RevokeGrant = %v, want ErrNotFound", tok.Kind, err)
 		}
 		if _, err := s.ConsumeToken(ctx, tok.Hash, now()); !errors.Is(err, grantor.ErrNotFound) {
-			t.Fatalf("ConsumeToken(%s) after RevokeGrant = %v, want ErrNotFound", tok.Type, err)
+			t.Fatalf("ConsumeToken(%s) after RevokeGrant = %v, want ErrNotFound", tok.Kind, err)
 		}
 	}
 	if _, err := s.Token(ctx, other.Hash); err != nil {
@@ -348,7 +348,7 @@ func testRevokeGrantCoversLaterTokens(t *testing.T, s grantor.Storage) {
 	if err := s.RevokeGrant(ctx, grantID); err != nil {
 		t.Fatalf("RevokeGrant: %v", err)
 	}
-	tok := fullToken(grantor.TokenTypeAccessToken, grantID)
+	tok := fullToken(grantor.TokenKindAccessToken, grantID)
 	if err := s.CreateToken(ctx, tok); err != nil && !errors.Is(err, grantor.ErrNotFound) {
 		t.Fatalf("CreateToken after RevokeGrant = %v, want nil or ErrNotFound", err)
 	}
@@ -380,7 +380,7 @@ func testReturnedRecordsAreCopies(t *testing.T, s grantor.Storage) {
 		t.Fatalf("storage returned a reference to its own request")
 	}
 
-	tok := fullToken(grantor.TokenTypeAccessToken, randomID())
+	tok := fullToken(grantor.TokenKindAccessToken, randomID())
 	if err := s.CreateToken(ctx, tok); err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}

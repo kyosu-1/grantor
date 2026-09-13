@@ -52,17 +52,6 @@ type Error struct {
 	cause error
 }
 
-// Sentinel errors an application passes to [Provider.Deny]. They compare
-// equal, with [errors.Is], to any *Error that has the same Code.
-var (
-	ErrAccessDenied             = &Error{Code: CodeAccessDenied}
-	ErrLoginRequired            = &Error{Code: CodeLoginRequired}
-	ErrConsentRequired          = &Error{Code: CodeConsentRequired}
-	ErrInteractionRequired      = &Error{Code: CodeInteractionRequired}
-	ErrAccountSelectionRequired = &Error{Code: CodeAccountSelectionRequired}
-	ErrTemporarilyUnavailable   = &Error{Code: CodeTemporarilyUnavailable}
-)
-
 func (e *Error) Error() string {
 	if e.Description == "" {
 		return e.Code
@@ -73,14 +62,18 @@ func (e *Error) Error() string {
 // Unwrap returns the internal cause of the error, if any.
 func (e *Error) Unwrap() error { return e.cause }
 
-// Is reports whether target is an *Error with the same Code.
+// Is reports whether target is an *Error with the same Code, so that
+// errors.Is(err, &grantor.Error{Code: grantor.CodeAccessDenied}) matches any
+// access_denied error.
 func (e *Error) Is(target error) bool {
 	t, ok := target.(*Error)
 	return ok && t.Code == e.Code
 }
 
-// statusCode returns the HTTP status for a token-style JSON error response.
-func (e *Error) statusCode() int {
+// HTTPStatus returns the status grantor uses when it writes e as a JSON error
+// response or error page: StatusCode if it is a 4xx or 5xx status, otherwise
+// the status RFC 6749 and RFC 6750 define for Code.
+func (e *Error) HTTPStatus() int {
 	if e.StatusCode >= 400 && e.StatusCode <= 599 {
 		return e.StatusCode
 	}

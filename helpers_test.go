@@ -188,7 +188,7 @@ func (e *env) registerClients() {
 	// separately.
 	e.store.SetClient(e.issuer, grantor.Client{
 		ID:           confidentialClient,
-		SecretHash:   grantor.HashSecret(confidentialSecret),
+		SecretHash:   grantor.HashClientSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect},
 		GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Scopes:       allScopes,
@@ -197,7 +197,7 @@ func (e *env) registerClients() {
 	e.store.SetClient(e.issuer, grantor.Client{
 		ID:                postClient,
 		AuthMethod:        grantor.AuthMethodClientSecretPost,
-		SecretHash:        grantor.HashSecret(confidentialSecret),
+		SecretHash:        grantor.HashClientSecret(confidentialSecret),
 		RedirectURIs:      []string{clientRedirect},
 		Scopes:            allScopes,
 		IDTokenSigningAlg: "ES256",
@@ -212,13 +212,13 @@ func (e *env) registerClients() {
 	})
 	e.store.SetClient(e.issuer, grantor.Client{
 		ID:         serviceClient,
-		SecretHash: grantor.HashSecret(confidentialSecret),
+		SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{grantor.GrantTypeClientCredentials},
 		Scopes:     []string{"api", "openid"},
 	})
 	e.store.SetClient(e.issuer, grantor.Client{
 		ID:                 resourceServer,
-		SecretHash:         grantor.HashSecret(confidentialSecret),
+		SecretHash:         grantor.HashClientSecret(confidentialSecret),
 		GrantTypes:         []grantor.GrantType{grantor.GrantTypeClientCredentials},
 		AllowIntrospection: true,
 	})

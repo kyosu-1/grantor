@@ -23,7 +23,7 @@ func TestClaimsParameterCannotWidenAccess(t *testing.T) {
 	const narrowClient = "narrow-app"
 	e.store.SetClient(testIssuer, grantor.Client{
 		ID:           narrowClient,
-		SecretHash:   grantor.HashSecret(confidentialSecret),
+		SecretHash:   grantor.HashClientSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect},
 		Scopes:       []string{"openid", "profile"},
 		PKCE:         grantor.PKCEOptional,
@@ -160,7 +160,7 @@ func TestCodeExchangeRechecksClientScopes(t *testing.T) {
 	code := e.login(authParams(confidentialClient, "openid email", pkcePair{}), nil)
 	e.store.SetClient(testIssuer, grantor.Client{
 		ID:           confidentialClient,
-		SecretHash:   grantor.HashSecret(confidentialSecret),
+		SecretHash:   grantor.HashClientSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect},
 		Scopes:       []string{"openid"},
 		PKCE:         grantor.PKCEOptional,

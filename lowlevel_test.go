@@ -15,10 +15,10 @@ import (
 )
 
 func TestErrorStatusCode(t *testing.T) {
-	if got := grantor.StatusCodeOf(&grantor.Error{Code: "custom", StatusCode: http.StatusTeapot}); got != http.StatusTeapot {
+	if got := (&grantor.Error{Code: "custom", StatusCode: http.StatusTeapot}).HTTPStatus(); got != http.StatusTeapot {
 		t.Fatalf("status = %d", got)
 	}
-	if got := grantor.StatusCodeOf(&grantor.Error{Code: grantor.CodeInvalidClient}); got != http.StatusUnauthorized {
+	if got := (&grantor.Error{Code: grantor.CodeInvalidClient}).HTTPStatus(); got != http.StatusUnauthorized {
 		t.Fatalf("default status = %d", got)
 	}
 }
@@ -346,7 +346,7 @@ func TestCustomGrant(t *testing.T) {
 		}
 	})
 	e.store.SetClient(testIssuer, grantor.Client{
-		ID: "cli", SecretHash: grantor.HashSecret(confidentialSecret),
+		ID: "cli", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{apiKeyGrant}, Scopes: []string{"openid", "api"},
 	})
 
@@ -364,7 +364,7 @@ func TestCustomGrant(t *testing.T) {
 	status, body = e.tokenRequest(url.Values{"grant_type": {"urn:example:unknown"}}, basic("cli", confidentialSecret))
 	expectError(t, status, body, http.StatusBadRequest, "unsupported_grant_type")
 
-	m := decodeJSON(t, e.get(grantor.PathOpenIDConfig, nil))
+	m := decodeJSON(t, e.get(grantor.PathOpenIDConfiguration, nil))
 	if !slices.Contains(m["grant_types_supported"].([]any), any(string(apiKeyGrant))) {
 		t.Fatalf("grant_types_supported = %v", m["grant_types_supported"])
 	}

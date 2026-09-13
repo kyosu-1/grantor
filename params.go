@@ -109,7 +109,7 @@ func (p *Provider) WriteTokenError(w http.ResponseWriter, r *http.Request, err e
 	if e.Code == CodeInvalidClient && strings.HasPrefix(r.Header.Get("Authorization"), "Basic ") {
 		w.Header().Set("WWW-Authenticate", `Basic realm="token"`)
 	}
-	writeJSON(w, e.statusCode(), body)
+	writeJSON(w, e.HTTPStatus(), body)
 }
 
 func allowMethods(w http.ResponseWriter, r *http.Request, methods ...string) bool {

@@ -39,7 +39,7 @@ See [docs/design.md](docs/design.md) for details.
 store := memory.New() // implements grantor.Storage and grantor.ClientStore
 store.SetClient("https://id.example.com", grantor.Client{
 	ID:           "web-app",
-	SecretHash:   grantor.HashSecret(secret), // secret from grantor.GenerateSecret()
+	SecretHash:   grantor.HashClientSecret(secret), // secret from grantor.GenerateClientSecret()
 	RedirectURIs: []string{"https://app.example.com/callback"},
 	GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 	Scopes:       []string{"openid", "profile", "email", "offline_access"},

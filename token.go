@@ -181,7 +181,7 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 		return nil, errInvalidRequest("code is required")
 	}
 	hash := hashToken(code)
-	t, perr := p.singleUseToken(ctx, iss, client, hash, TokenTypeAuthorizationCode)
+	t, perr := p.singleUseToken(ctx, iss, client, hash, TokenKindAuthorizationCode)
 	if perr != nil {
 		return nil, perr
 	}
@@ -242,7 +242,7 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, 
 		return nil, errInvalidRequest("refresh_token is required")
 	}
 	hash := hashToken(refreshToken)
-	t, perr := p.singleUseToken(ctx, iss, client, hash, TokenTypeRefreshToken)
+	t, perr := p.singleUseToken(ctx, iss, client, hash, TokenKindRefreshToken)
 	if perr != nil {
 		return nil, perr
 	}
@@ -328,7 +328,7 @@ func checkClientGrant(client *Client, grant *Token) *Error {
 // singleUseToken loads an authorization code or refresh token issued by iss
 // to client. It does not check whether the token was used or has expired;
 // see checkUnused.
-func (p *Provider) singleUseToken(ctx context.Context, iss *resolvedIssuer, client *Client, hash string, typ TokenType) (*Token, *Error) {
+func (p *Provider) singleUseToken(ctx context.Context, iss *resolvedIssuer, client *Client, hash string, typ TokenKind) (*Token, *Error) {
 	t, err := p.cfg.Storage.Token(ctx, hash)
 	if errors.Is(err, ErrNotFound) {
 		return nil, errInvalidGrant("the grant is invalid, expired or revoked")
@@ -336,7 +336,7 @@ func (p *Provider) singleUseToken(ctx context.Context, iss *resolvedIssuer, clie
 	if err != nil {
 		return nil, errServer(err)
 	}
-	if t.Type != typ || t.Issuer != iss.url || t.ClientID != client.ID {
+	if t.Kind != typ || t.Issuer != iss.url || t.ClientID != client.ID {
 		return nil, errInvalidGrant("the grant is invalid, expired or revoked")
 	}
 	return t, nil
@@ -378,7 +378,7 @@ func (p *Provider) revokeReusedGrant(ctx context.Context, t *Token) *Error {
 		return errServer(err)
 	}
 	p.cfg.Logger.WarnContext(ctx, "grantor: single-use token reused; grant revoked",
-		"client_id", t.ClientID, "token_type", string(t.Type))
+		"client_id", t.ClientID, "token_type", string(t.Kind))
 	return errInvalidGrant("the grant is invalid, expired or revoked")
 }
 
@@ -439,10 +439,10 @@ func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *
 		Scope:       strings.Join(plan.scopes, " "),
 	}
 
-	derive := func(value string, typ TokenType, scopes []string) *Token {
+	derive := func(value string, typ TokenKind, scopes []string) *Token {
 		t := *grant
 		t.Hash = hashToken(value)
-		t.Type = typ
+		t.Kind = typ
 		t.Scopes = scopes
 		t.RedirectURI, t.RedirectURIInRequest, t.Nonce = "", false, ""
 		t.CodeChallenge, t.CodeChallengeMethod = "", ""
@@ -452,7 +452,7 @@ func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *
 		return &t
 	}
 
-	access := derive(accessToken, TokenTypeAccessToken, plan.scopes)
+	access := derive(accessToken, TokenKindAccessToken, plan.scopes)
 	access.Audience = plan.audience
 	access.AccessTokenClaims = plan.accessClaims
 	access.ExpiresAt = expiresAt
@@ -460,7 +460,7 @@ func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *
 
 	if plan.refresh {
 		refreshToken := randomToken()
-		refresh := derive(refreshToken, TokenTypeRefreshToken, grant.Scopes)
+		refresh := derive(refreshToken, TokenKindRefreshToken, grant.Scopes)
 		refresh.ExpiresAt = now.Add(plan.refreshLifetime)
 		minted.records = append(minted.records, refresh)
 		resp.RefreshToken = refreshToken
