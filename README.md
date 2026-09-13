@@ -26,6 +26,7 @@ Implicit and password grants are intentionally not supported, following OAuth 2.
 - **Wired at compile time.** `grantor.New` takes typed dependencies. A missing storage method is a compile error, not a runtime surprise.
 - **Small, explicit contracts.** Storage is one interface whose atomicity requirements are spelled out, such as single-use consumption of authorization codes and refresh tokens. The `storagetest` package verifies an implementation against them.
 - **The application owns the UI.** Valid authorization requests are handed to your code, which calls `Approve` or `Deny` when it is done.
+- **Two layers.** Mount the whole `Provider`, or build your own endpoints from the same building blocks: parse, adjust, complete and write each request yourself.
 - **Safe errors.** Clients only ever see RFC error codes and fixed descriptions; internal causes go to your logger.
 - **Minimal dependencies.** The standard library plus [go-jose](https://github.com/go-jose/go-jose) for JOSE. No cryptography is implemented here.
 
@@ -65,13 +66,86 @@ mux.Handle("/", provider) // /authorize, /token, /userinfo, /jwks, /.well-known/
 mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 	req, err := provider.AuthorizationRequest(r, r.FormValue("id"))
 	// ... authenticate the end-user and ask for consent ...
-	err = provider.Approve(w, r, req.ID, grantor.Approval{
+	err = provider.Approve(w, r, req, grantor.Approval{
 		Subject:  user.ID,
 		Scopes:   grantedScopes,
 		AuthTime: authTime,
 	})
 })
 ```
+
+## Low-level API
+
+`Provider.ServeHTTP` is built from exported building blocks that you can use directly when you need your own router, paths, checks or grant types.
+
+Every endpoint has a `ServeXxx` method that mounts on any `net/http` router, and `Config.Endpoints` sets the paths published in discovery:
+
+```go
+mux.HandleFunc("GET /oauth2/keys", provider.ServeJWKS)
+mux.Handle("POST /oauth2/token", rateLimit(http.HandlerFunc(provider.ServeToken)))
+```
+
+The authorization and token endpoints can be written step by step. Requests are plain structs that you may adjust; grantor validates them again before completing them, so adjustments cannot weaken security:
+
+```go
+mux.HandleFunc("/oauth2/authorize", func(w http.ResponseWriter, r *http.Request) {
+	req, err := provider.ParseAuthorizationRequest(r)
+	if err != nil {
+		provider.WriteAuthorizationError(w, r, err)
+		return
+	}
+	req.Scopes = policy.Allowed(req.ClientID, req.Scopes) // narrow by policy
+	if user, ok := session(r); ok && !req.NeedsAuthentication(user.AuthTime) {
+		approval := grantor.Approval{Subject: user.ID, Scopes: req.Scopes, AuthTime: user.AuthTime}
+		if err := provider.Approve(w, r, req, approval); err != nil {
+			http.Error(w, "cannot complete sign-in", http.StatusInternalServerError)
+		}
+		return
+	}
+	// Complete it after the login page.
+	if err := provider.SaveAuthorizationRequest(w, r, req); err != nil {
+		http.Error(w, "cannot start sign-in", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/login?id="+url.QueryEscape(req.ID), http.StatusFound)
+})
+
+mux.HandleFunc("POST /oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+	req, err := provider.ParseTokenRequest(r) // authenticates the client
+	if err != nil {
+		provider.WriteTokenError(w, r, err)
+		return
+	}
+	resp, err := provider.Exchange(r.Context(), req)
+	if err != nil {
+		provider.WriteTokenError(w, r, err)
+		return
+	}
+	provider.WriteTokenResponse(w, resp)
+})
+```
+
+Two hooks work with either layer:
+
+```go
+cfg.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
+	if users.Disabled(ctx, is.Subject) { // runs for every grant type, including refreshes
+		return &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "the account is disabled"}
+	}
+	return nil
+}
+cfg.Grants = map[grantor.GrantType]grantor.GrantFunc{
+	"urn:example:grant-type:api-key": func(ctx context.Context, req *grantor.TokenRequest) (*grantor.TokenResponse, error) {
+		key, err := apiKeys.Lookup(ctx, req.Form.Get("api_key"))
+		if err != nil {
+			return nil, &grantor.Error{Code: grantor.CodeInvalidGrant}
+		}
+		return provider.IssueTokens(ctx, req, grantor.Grant{Subject: key.Owner, Scopes: key.Scopes})
+	},
+}
+```
+
+[`examples/lowlevel`](examples/lowlevel) is a runnable provider built this way.
 
 ## Example apps
 
@@ -85,7 +159,7 @@ go run ./rp   # relying party on http://localhost:9002
 
 Open http://localhost:9002 and sign in as `alice` or `bob` with the password `password`. The relying party shows the verified ID token, UserInfo, and buttons to refresh, introspect and revoke tokens.
 
-`examples/internal/e2e` drives both apps through the whole flow in a test.
+`examples/internal/e2e` drives both apps through the whole flow in a test. [`examples/lowlevel`](examples/lowlevel) is a provider built from the low-level API (`go run ./lowlevel`, on http://localhost:9003).
 
 ## Storage
 

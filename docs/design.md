@@ -22,16 +22,22 @@ This document records the decisions behind the initial implementation. They are 
 ## Architecture
 
 ```
-Provider (http.Handler)
-├── authorization endpoint ──> Config.Interact ──> application login/consent
-│                                                   └── Provider.Approve / Deny
-├── token endpoint (authorization_code, refresh_token, client_credentials)
-├── userinfo, introspection, revocation
-└── jwks, discovery (OpenID + RFC 8414)
+Provider.ServeHTTP                convenience layer: routes Config.Endpoints
+│
+├── ServeAuthorization  = ParseAuthorizationRequest → SaveAuthorizationRequest → Config.Interact
+│                                                     application login/consent → Approve / Deny
+├── ServeToken          = ParseTokenRequest → Exchange → WriteTokenResponse
+│                         built-in grants and Config.Grants → issuance → Config.BeforeIssue
+├── ServeUserInfo, ServeIntrospection, ServeRevocation
+└── ServeJWKS, ServeDiscovery
 
 Storage      authorization requests, tokens, client assertion jti
 ClientStore  registered clients, per issuer
 ```
+
+The convenience layer uses only exported building blocks, so an application can replace any part of it: mount the `ServeXxx` methods on its own router, or write the authorization and token endpoints itself. The design of the two layers is described in [superpowers/specs/2026-09-13-layered-api-design.md](superpowers/specs/2026-09-13-layered-api-design.md).
+
+Requests are plain structs that the application may adjust between parsing and completion. Completion validates them again against the client registration (redirect URI, response type and mode, scopes, PKCE policy), a saved request is completed from its stored copy and cannot be changed, and `Exchange` only accepts token requests it parsed for the client that authenticated. Hooks and custom grants can only narrow what is issued.
 
 ### Authorization requests and interaction
 

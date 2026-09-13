@@ -8,6 +8,17 @@
 // interfaces, authenticates end-users and asks for consent in its own pages,
 // and supplies end-user claims.
 //
+// # Layers
+//
+// [Provider.ServeHTTP] serves every endpoint at the paths in
+// [Config.Endpoints]. It is built from exported building blocks that
+// applications can use directly: a ServeXxx method per endpoint for any
+// router, [Provider.ParseAuthorizationRequest], [Provider.Approve] and
+// [Provider.Deny] for a custom authorization endpoint,
+// [Provider.ParseTokenRequest] and [Provider.Exchange] for a custom token
+// endpoint, [Config.BeforeIssue] to check every issuance, and
+// [Config.Grants] with [Provider.IssueTokens] for custom grant types.
+//
 // # Authorization flow
 //
 // When a valid authorization request arrives, the provider saves it and
@@ -20,7 +31,9 @@
 //	}
 //
 //	// in the login handler, after authenticating the end-user:
-//	err := provider.Approve(w, r, id, grantor.Approval{
+//	req, err := provider.AuthorizationRequest(r, id)
+//	// ...
+//	err = provider.Approve(w, r, req, grantor.Approval{
 //		Subject:  user.ID,
 //		Scopes:   req.Scopes,
 //		AuthTime: authTime,
