@@ -137,12 +137,13 @@ cfg.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
 	return nil
 }
 cfg.Grants = map[grantor.GrantType]grantor.GrantFunc{
-	"urn:example:grant-type:api-key": func(ctx context.Context, req *grantor.TokenRequest) (*grantor.TokenResponse, error) {
+	"urn:example:grant-type:api-key": func(ctx context.Context, req *grantor.TokenRequest) (*grantor.Grant, error) {
 		key, err := apiKeys.Lookup(ctx, req.Form.Get("api_key"))
 		if err != nil {
 			return nil, &grantor.Error{Code: grantor.CodeInvalidGrant}
 		}
-		return provider.IssueTokens(ctx, req, grantor.Grant{Subject: key.Owner, Scopes: key.Scopes})
+		// grantor checks the grant against the client registration and issues the tokens.
+		return &grantor.Grant{Subject: key.Owner, Scopes: key.Scopes}, nil
 	},
 }
 ```

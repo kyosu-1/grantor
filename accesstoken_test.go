@@ -582,8 +582,8 @@ func TestCustomGrantAudience(t *testing.T) {
 	e.registerClients()
 	e.p = mustProvider(t, e, func(c *grantor.Config) {
 		c.Grants = map[grantor.GrantType]grantor.GrantFunc{
-			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.TokenResponse, error) {
-				return e.p.IssueTokens(ctx, req, grantor.Grant{Scopes: []string{"api"}, Audience: req.Form["audience"]})
+			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.Grant, error) {
+				return &grantor.Grant{Scopes: []string{"api"}, Audience: req.Form["audience"]}, nil
 			},
 		}
 	})

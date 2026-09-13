@@ -17,7 +17,7 @@
 // [Provider.Deny] for a custom authorization endpoint,
 // [Provider.ParseTokenRequest] and [Provider.Exchange] for a custom token
 // endpoint, [Config.BeforeIssue] to check every issuance, and
-// [Config.Grants] with [Provider.IssueTokens] for custom grant types.
+// [Config.Grants] for custom grant types.
 //
 // # Authorization flow
 //

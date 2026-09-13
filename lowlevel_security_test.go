@@ -42,7 +42,7 @@ func TestTypedNilErrors(t *testing.T) {
 	})
 	e.p = mustProvider(t, e, func(c *grantor.Config) {
 		c.Grants = map[grantor.GrantType]grantor.GrantFunc{
-			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.TokenResponse, error) {
+			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.Grant, error) {
 				var e *grantor.Error
 				return nil, e
 			},
@@ -96,49 +96,58 @@ func TestSavedRequestWithClearedIDIsRejected(t *testing.T) {
 	}
 }
 
-func TestIssueTokensOutsideExchange(t *testing.T) {
+// Grants returned by custom grant functions are checked against the client
+// registration before tokens are issued.
+func TestCustomGrantChecks(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
-	parse := func(form string, id string) *grantor.TokenRequest {
-		t.Helper()
-		r := httptest.NewRequest(http.MethodPost, testIssuer+"/token", strings.NewReader(form))
-		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		r.SetBasicAuth(id, confidentialSecret)
-		req, err := e.p.ParseTokenRequest(r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return req
-	}
-	ctx := context.Background()
-	if _, err := e.p.IssueTokens(ctx, parse("grant_type=authorization_code", serviceClient), grantor.Grant{Scopes: []string{"api"}}); err == nil {
-		t.Error("IssueTokens accepted a built-in grant type")
-	}
 	e.store.SetClient(testIssuer, grantor.Client{
 		ID: "cli", SecretHash: grantor.HashClientSecret(confidentialSecret),
 		GrantTypes: []grantor.GrantType{apiKeyGrant}, Scopes: []string{"openid", "api"},
 	})
+	var grant *grantor.Grant
+	var grantErr error
 	e.p = mustProvider(t, e, func(c *grantor.Config) {
-		c.Grants = map[grantor.GrantType]grantor.GrantFunc{apiKeyGrant: func(context.Context, *grantor.TokenRequest) (*grantor.TokenResponse, error) { return nil, nil }}
+		c.Grants = map[grantor.GrantType]grantor.GrantFunc{
+			apiKeyGrant: func(context.Context, *grantor.TokenRequest) (*grantor.Grant, error) { return grant, grantErr },
+		}
 	})
-	if _, err := e.p.IssueTokens(ctx, parse("grant_type="+url.QueryEscape(string(apiKeyGrant)), serviceClient), grantor.Grant{Scopes: []string{"api"}}); err == nil {
-		t.Error("IssueTokens accepted a client that may not use the grant type")
+	request := func(clientID string) (int, map[string]any) {
+		return e.tokenRequest(url.Values{"grant_type": {string(apiKeyGrant)}}, basic(clientID, confidentialSecret))
 	}
-	for name, g := range map[string]grantor.Grant{
+	for name, g := range map[string]*grantor.Grant{
+		"no grant":               nil,
 		"openid without subject": {Scopes: []string{"openid"}},
 		"refresh not allowed":    {Subject: "alice", Scopes: []string{"api"}, RefreshToken: true},
-		"scope outside client":   {Scopes: []string{"admin"}},
+		"invalid subject":        {Subject: "alice\n", Scopes: []string{"api"}},
 	} {
-		if _, err := e.p.IssueTokens(ctx, parse("grant_type="+url.QueryEscape(string(apiKeyGrant)), "cli"), g); err == nil {
-			t.Errorf("%s: IssueTokens succeeded", name)
+		grant, grantErr = g, nil
+		status, body := request("cli")
+		if status != http.StatusInternalServerError || body["error"] != "server_error" {
+			t.Errorf("%s: token request = %d %v, want server_error", name, status, body)
 		}
 	}
+	grant, grantErr = &grantor.Grant{Scopes: []string{"admin"}}, nil
+	status, body := request("cli")
+	expectError(t, status, body, http.StatusBadRequest, "invalid_scope")
+	grant, grantErr = nil, &grantor.Error{Code: grantor.CodeInvalidGrant}
+	status, body = request("cli")
+	expectError(t, status, body, http.StatusBadRequest, "invalid_grant")
+	grant, grantErr = &grantor.Grant{Scopes: []string{"api"}}, nil
+	status, body = request(serviceClient)
+	expectError(t, status, body, http.StatusBadRequest, "unauthorized_client")
 
-	// Editing the client in place has no effect on what is issued.
-	req := parse("grant_type=client_credentials&scope=api", serviceClient)
+	// Editing the parsed request in place has no effect on what is issued.
+	r := httptest.NewRequest(http.MethodPost, testIssuer+"/token", strings.NewReader("grant_type=client_credentials&scope=api"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.SetBasicAuth(serviceClient, confidentialSecret)
+	req, err := e.p.ParseTokenRequest(r)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req.Client.Scopes = append(req.Client.Scopes, "admin")
 	req.Scopes = []string{"admin"}
-	if resp, err := e.p.Exchange(ctx, req); err != nil || resp.Scope != "api" {
+	if resp, err := e.p.Exchange(context.Background(), req); err != nil || resp.Scope != "api" {
 		t.Errorf("Exchange after editing the request = %+v, %v; want the parsed scope", resp, err)
 	}
 }
@@ -183,8 +192,8 @@ func TestBeforeIssueRules(t *testing.T) {
 	var seen []grantor.GrantType
 	e.p = mustProvider(t, e, func(c *grantor.Config) {
 		c.Grants = map[grantor.GrantType]grantor.GrantFunc{
-			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.TokenResponse, error) {
-				return e.p.IssueTokens(ctx, req, grantor.Grant{Scopes: []string{"api"}})
+			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.Grant, error) {
+				return &grantor.Grant{Scopes: []string{"api"}}, nil
 			},
 		}
 		c.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {

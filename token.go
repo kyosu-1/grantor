@@ -3,7 +3,6 @@ package grantor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -25,6 +24,11 @@ type TokenRequest struct {
 	Scopes []string
 	// Form holds the request parameters except client credentials.
 	Form url.Values
+	// Issuer is the issuer URL the request was sent to.
+	Issuer string
+	// HTTPRequest is the request passed to ParseTokenRequest, for its headers
+	// and TLS state. Its body has already been read.
+	HTTPRequest *http.Request
 
 	iss    *resolvedIssuer
 	client Client   // the authenticated client, unaffected by changes to Client
@@ -74,11 +78,13 @@ func (p *Provider) parseToken(w http.ResponseWriter, r *http.Request, iss *resol
 		return nil, errInvalidRequest("grant_type is required")
 	}
 	req := &TokenRequest{
-		Client:    client,
-		GrantType: GrantType(q.get("grant_type")),
-		Form:      url.Values{},
-		iss:       iss,
-		client:    *client,
+		Client:      client,
+		GrantType:   GrantType(q.get("grant_type")),
+		Form:        url.Values{},
+		Issuer:      iss.url,
+		HTTPRequest: r,
+		iss:         iss,
+		client:      *client,
 	}
 	for name, v := range q.values {
 		if name != "client_secret" && name != "client_assertion" {
@@ -138,14 +144,11 @@ func (p *Provider) exchange(ctx context.Context, req *TokenRequest) (*TokenRespo
 	if !client.allowsGrant(req.GrantType) {
 		return nil, newError(CodeUnauthorizedClient, "the client may not use this grant type")
 	}
-	resp, err := fn(ctx, req)
+	g, err := fn(ctx, req)
 	if err != nil {
 		return nil, asProtocolError(err)
 	}
-	if resp == nil {
-		return nil, errServer(fmt.Errorf("grant %q returned no response", req.GrantType))
-	}
-	return resp, nil
+	return p.issueGrant(ctx, req, client, g)
 }
 
 // WriteTokenResponse writes a successful token response.

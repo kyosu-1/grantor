@@ -39,8 +39,7 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 	})
 	disabledUsers := map[string]bool{"mallory": true}
 
-	var provider *grantor.Provider
-	provider, err = grantor.New(grantor.Config{
+	provider, err := grantor.New(grantor.Config{
 		Issuer:  &grantor.Issuer{URL: issuer, Keys: []grantor.SigningKey{{ID: "example", Signer: key}}},
 		Clients: store,
 		Storage: store,
@@ -53,11 +52,12 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 			JWKS:          "/oauth2/keys",
 		},
 		Grants: map[grantor.GrantType]grantor.GrantFunc{
-			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.TokenResponse, error) {
+			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.Grant, error) {
 				if subtle.ConstantTimeCompare([]byte(req.Form.Get("api_key")), []byte("demo-api-key")) != 1 {
 					return nil, &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "unknown API key"}
 				}
-				return provider.IssueTokens(ctx, req, grantor.Grant{Scopes: []string{"api"}, Audience: req.Client.Audience})
+				// The client uses JWT access tokens, which need an audience.
+				return &grantor.Grant{Scopes: []string{"api"}, Audience: req.Client.Audience}, nil
 			},
 		},
 		BeforeIssue: func(ctx context.Context, is *grantor.Issuance) error {

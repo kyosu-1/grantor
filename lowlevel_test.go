@@ -345,11 +345,14 @@ func TestCustomGrant(t *testing.T) {
 	e.registerClients()
 	e.p = mustProvider(t, e, func(c *grantor.Config) {
 		c.Grants = map[grantor.GrantType]grantor.GrantFunc{
-			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.TokenResponse, error) {
+			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.Grant, error) {
+				if req.Issuer != testIssuer || req.HTTPRequest == nil || req.HTTPRequest.Header.Get("Authorization") == "" {
+					t.Errorf("TokenRequest.Issuer = %q, HTTPRequest = %v", req.Issuer, req.HTTPRequest)
+				}
 				if req.Form.Get("api_key") != "key-for-alice" {
 					return nil, &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "unknown API key"}
 				}
-				return e.p.IssueTokens(ctx, req, grantor.Grant{Subject: "alice", Scopes: []string{"openid", "api"}, AuthTime: e.clock.Now()})
+				return &grantor.Grant{Subject: "alice", Scopes: []string{"openid", "api"}, AuthTime: e.clock.Now()}, nil
 			},
 		}
 	})
@@ -385,7 +388,7 @@ func TestCustomGrantValidation(t *testing.T) {
 		Issuer:  &grantor.Issuer{URL: testIssuer, Keys: []grantor.SigningKey{{ID: "k", Signer: rsaKey}}},
 		Clients: store, Storage: store,
 	}
-	noop := func(context.Context, *grantor.TokenRequest) (*grantor.TokenResponse, error) { return nil, nil }
+	noop := func(context.Context, *grantor.TokenRequest) (*grantor.Grant, error) { return nil, nil }
 	for name, grants := range map[string]map[grantor.GrantType]grantor.GrantFunc{
 		"built-in": {grantor.GrantTypeRefreshToken: noop},
 		"empty":    {"": noop},

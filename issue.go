@@ -9,14 +9,15 @@ import (
 )
 
 // GrantFunc handles a custom grant type at the token endpoint. It decides
-// whether access is granted and issues tokens with [Provider.IssueTokens].
-// Returning an *Error sends it to the client; other errors become
-// server_error.
+// whether access is granted and returns the grant; grantor checks it against
+// the client registration and issues the tokens. Returning an *Error sends
+// it to the client; other errors become server_error, and so does returning
+// neither a grant nor an error.
 //
 // req.Client has authenticated unless it is a public client, which is only
 // identified by client_id; such grants must rely on credentials in the
 // request itself.
-type GrantFunc func(ctx context.Context, req *TokenRequest) (*TokenResponse, error)
+type GrantFunc func(ctx context.Context, req *TokenRequest) (*Grant, error)
 
 // Grant describes the access a custom grant issues tokens for.
 type Grant struct {
@@ -84,26 +85,11 @@ type Issuance struct {
 	IDTokenLifetime      time.Duration
 }
 
-// IssueTokens issues tokens for a custom grant; see [GrantFunc].
-func (p *Provider) IssueTokens(ctx context.Context, req *TokenRequest, g Grant) (*TokenResponse, error) {
-	resp, perr := p.issueGrant(ctx, req, g)
-	if perr != nil {
-		return nil, perr
-	}
-	return resp, nil
-}
-
-func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, g Grant) (*TokenResponse, *Error) {
-	client, perr := checkTokenRequest(req)
-	if perr != nil {
-		return nil, perr
-	}
-	switch req.GrantType {
-	case GrantTypeAuthorizationCode, GrantTypeRefreshToken, GrantTypeClientCredentials:
-		return nil, errServer(fmt.Errorf("IssueTokens is for custom grants, not %s", req.GrantType))
-	}
-	if !client.allowsGrant(req.GrantType) {
-		return nil, newError(CodeUnauthorizedClient, "the client may not use this grant type")
+// issueGrant checks a grant returned by a custom grant function against the
+// client registration and issues its tokens.
+func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, client *Client, g *Grant) (*TokenResponse, *Error) {
+	if g == nil {
+		return nil, errServer(fmt.Errorf("grant %q returned neither a grant nor an error", req.GrantType))
 	}
 	if g.Subject != "" {
 		if err := validateSubject(g.Subject); err != nil {
@@ -120,10 +106,10 @@ func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, g Grant) (
 		}
 	}
 	if g.Subject == "" && (slices.Contains(scopes, "openid") || slices.Contains(scopes, "offline_access")) {
-		return nil, errServer(errors.New("IssueTokens: the openid and offline_access scopes need a subject"))
+		return nil, errServer(fmt.Errorf("grant %q: the openid and offline_access scopes need a subject", req.GrantType))
 	}
 	if g.RefreshToken && !client.allowsGrant(GrantTypeRefreshToken) {
-		return nil, errServer(fmt.Errorf("IssueTokens: client %q may not use refresh tokens", client.ID))
+		return nil, errServer(fmt.Errorf("grant %q: client %q may not use refresh tokens", req.GrantType, client.ID))
 	}
 	audience, ok := subsetOf(client.Audience, g.Audience)
 	if !ok {
