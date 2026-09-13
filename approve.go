@@ -130,10 +130,16 @@ func bindingFromResponse(w http.ResponseWriter, name string) string {
 // AuthorizationRequest.
 //
 // The request is validated again against the client registration, so that
-// changes the application made to it cannot weaken security. If Approve
-// returns an error, nothing has been written to w. The error describes why
-// the approval is not acceptable, for example because the end-user must
-// authenticate again; see [AuthorizationRequest.NeedsAuthentication].
+// changes the application made to it cannot weaken security.
+//
+// If Approve returns an error, nothing has been written to w. Errors wrap
+// ErrInvalidApproval, for example when the end-user must authenticate again
+// (see [AuthorizationRequest.NeedsAuthentication]),
+// ErrInvalidAuthorizationRequest, ErrAuthorizationRequestNotFound or
+// ErrAuthorizationRequestModified, or report a storage failure. Once Approve
+// has written a response it returns nil, even when that response is an
+// error sent to the client because the authorization code could not be
+// saved; the failure is logged.
 func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest, a Approval) error {
 	iss, client, req, err := p.completable(w, r, req, true)
 	if err != nil {

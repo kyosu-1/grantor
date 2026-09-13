@@ -81,9 +81,10 @@ type Client struct {
 	// accepting credentials in the request body.
 	AuthMethod AuthMethod
 
-	// SecretHash is the SHA-256 hash of the client secret, as returned by
-	// [HashClientSecret]. Only hashes are stored, so secrets must be high-entropy
-	// values such as those returned by [GenerateClientSecret].
+	// SecretHash verifies the client secret. Set it to the value
+	// [HashClientSecret] returns and treat it as opaque. It is only suitable
+	// for high-entropy secrets such as those from [GenerateClientSecret],
+	// never for secrets chosen by people.
 	SecretHash []byte
 
 	// JWKS is the client's JSON Web Key Set, used to verify private_key_jwt

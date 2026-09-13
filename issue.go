@@ -39,7 +39,8 @@ type Grant struct {
 }
 
 // Issuance describes tokens that are about to be issued. It is passed to
-// Config.BeforeIssue.
+// Config.BeforeIssue. Fields whose documentation does not say that the hook
+// may change them are informational; changing them has no effect.
 type Issuance struct {
 	Issuer    string
 	GrantType GrantType

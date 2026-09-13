@@ -15,7 +15,8 @@ import (
 	"github.com/go-jose/go-jose/v4/cryptosigner"
 )
 
-// SigningKey is a private key used to sign ID tokens.
+// SigningKey is a private key that signs ID tokens, JWT access tokens and
+// the tokens of custom access token formats that use [SignFunc].
 type SigningKey struct {
 	// ID is the key ID (kid). It must be unique within an issuer.
 	ID string

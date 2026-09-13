@@ -10,7 +10,9 @@ import (
 
 // Endpoints are the paths of the protocol endpoints, relative to the issuer
 // URL. They are published in the discovery document and routed by
-// [Provider.ServeHTTP]. Empty fields use the Path constants.
+// [Provider.ServeHTTP]. Empty fields use the Path constants. Endpoints of
+// features that are not configured are never served, so upgrading grantor
+// does not expose new endpoints.
 type Endpoints struct {
 	Authorization string
 	Token         string

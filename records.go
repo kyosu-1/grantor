@@ -126,8 +126,8 @@ const (
 // grant can be revoked at once, for example when an authorization code or
 // refresh token is reused.
 type Token struct {
-	// Hash is the SHA-256 hash of the token value. The value itself is never
-	// stored.
+	// Hash is the SHA-256 hash of the token value, base64url-encoded without
+	// padding. The value itself is never stored.
 	Hash    string    `json:"hash"`
 	Kind    TokenKind `json:"kind"`
 	GrantID string    `json:"grant_id"`

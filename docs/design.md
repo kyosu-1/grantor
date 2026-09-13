@@ -17,7 +17,11 @@ This document records the decisions behind the initial implementation. They are 
 
 **Small surface, explicit behaviour.** Configuration is a struct with documented zero values. Extension points are functions (`Interact`, `Claims`, `IssuerFor`, `ErrorPage`) instead of strategy, provider or factory types.
 
-**Protocol errors are separate from internal errors.** `*grantor.Error` carries an RFC error code and a fixed description that is safe to send. Internal failures become `server_error` for the client and are logged with their cause.
+**Protocol errors are separate from internal errors.** `*grantor.Error` carries an RFC error code and a fixed description that is safe to send. Internal failures become `server_error` for the client and are logged with their cause. Errors meant for the application wrap sentinels (`ErrInvalidApproval`, `ErrInvalidAuthorizationRequest`, `ErrNotFound`), and there are no exported `*Error` values that callers could modify.
+
+**Lists fail safe.** A nil or empty list of scopes or audiences always means none. Defaults are filled in before the application sees a value (`AuthorizationRequest.Audience` starts as `Client.Audience`), so the usual Go filter idiom, which returns nil when it removes everything, can never grant more than intended.
+
+**Contracts do not grow.** `Storage` will not gain methods. Records may gain fields, which implementations persist, and features that need other storage take their own interface in an optional `Config` field.
 
 ## Architecture
 
@@ -31,13 +35,13 @@ Provider.ServeHTTP                convenience layer: routes Config.Endpoints
 ├── ServeUserInfo, ServeIntrospection, ServeRevocation
 └── ServeJWKS, ServeDiscovery
 
-Storage      authorization requests, tokens, client assertion jti
+Storage      authorization requests, tokens, replay protection (ClaimOnce)
 ClientStore  registered clients, per issuer
 ```
 
 The convenience layer uses only exported building blocks, so an application can replace any part of it: mount the `ServeXxx` methods on its own router, or write the authorization and token endpoints itself. The design of the two layers is described in [superpowers/specs/2026-09-13-layered-api-design.md](superpowers/specs/2026-09-13-layered-api-design.md).
 
-Requests are plain structs that the application may adjust between parsing and completion. Completion validates them again against the client registration (redirect URI, response type and mode, scopes, PKCE policy), a saved request is completed from its stored copy and cannot be changed, and `Exchange` only accepts token requests it parsed for the client that authenticated. Hooks and custom grants can only narrow what is issued.
+Authorization requests are plain structs that the application may adjust between parsing and completion. Completion validates them again against the client registration (redirect URI, response type and mode, scopes, audience, PKCE policy), and a saved request is completed from its stored copy and cannot be changed. `Exchange` only accepts token requests it parsed for the client that authenticated; their `Scopes` are informational, and `BeforeIssue` narrows token issuance with the parsed request at hand. Custom grant functions return a `Grant` that grantor checks against the client registration before issuing. Hooks and custom grants can only narrow what is issued.
 
 ### Authorization requests and interaction
 
@@ -48,6 +52,7 @@ Redirect URIs are compared with simple string comparison, except for the port of
 A valid request is saved with a random ID and handed to `Config.Interact`. The application authenticates the end-user however it likes and finishes with `Provider.Approve` or `Provider.Deny`. `Approve` enforces what the application must not get wrong:
 
 - granted scopes are a subset of the requested scopes, and include `openid` for OpenID Connect requests;
+- granted audiences are a subset of the request's audience, and not empty for clients that use JWT access tokens;
 - `prompt=login` and `max_age` are honoured, using `AuthTime`;
 - the end-user is the one the client asked for with `id_token_hint` or a `sub` claim value;
 - an essential `acr` claim request is satisfied;
@@ -115,12 +120,12 @@ For the code flow, scope claims are returned from UserInfo and not put in the ID
 
 ### Multiple issuers
 
-`Config.IssuerFor` resolves the issuer per request. The issuer URL is part of every stored request and token and is checked on every use, and clients are looked up per issuer, so tenants are isolated even when they share one storage.
+`Config.IssuerFor` resolves the issuer per request. The issuer URL is part of every stored request and token and is checked on every use, and clients are looked up per issuer, so tenants are isolated even when they share one storage. Only errors wrapping `ErrNotFound` mean "no such issuer" (404); any other failure, including an issuer with invalid keys, is logged and answered with 500, so an outage of the tenant directory does not look like a missing tenant.
 
 ## Not yet implemented
 
 - Request objects and `request_uri` (rejected with `request_not_supported` / `request_uri_not_supported`)
-- Pushed authorization requests, DPoP, mutual TLS, JWT access tokens
+- Pushed authorization requests, resource indicators, DPoP, mutual TLS
 - Pairwise subject identifiers, session management and logout specifications
 - Dynamic client registration
 - A grace period for concurrent refresh token rotation

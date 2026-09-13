@@ -34,7 +34,8 @@ type Issuer struct {
 	// Endpoints are served below it, for example URL + "/token".
 	URL string
 
-	// Keys signs ID tokens. Every key is published in the JWKS. For each
+	// Keys signs ID tokens and JWT access tokens. Every key is published in
+	// the JWKS. For each
 	// algorithm, the first key with that algorithm signs new tokens, so a key
 	// can be rotated by putting the new key before the old one and removing
 	// the old key once tokens signed with it have expired.
@@ -63,7 +64,8 @@ type InteractionFunc func(w http.ResponseWriter, r *http.Request, req *Authoriza
 // Protocol claims such as iss, aud and exp in the result are ignored.
 type ClaimsFunc func(ctx context.Context, grant *Token) (map[string]any, error)
 
-// Config configures a [Provider].
+// Config configures a [Provider]. Maps in Config must not be modified after
+// New.
 type Config struct {
 	// Issuer is the issuer of a single-tenant provider. Exactly one of Issuer
 	// and IssuerFor must be set.

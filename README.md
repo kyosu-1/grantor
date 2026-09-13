@@ -25,7 +25,8 @@ Implicit and password grants are intentionally not supported, following OAuth 2.
 
 - **Plain data.** Authorization requests, tokens and clients are structs with exported fields. Storage serializes data, never interfaces.
 - **Wired at compile time.** `grantor.New` takes typed dependencies. A missing storage method is a compile error, not a runtime surprise.
-- **Small, explicit contracts.** Storage is one interface whose atomicity requirements are spelled out, such as single-use consumption of authorization codes and refresh tokens. The `storagetest` package verifies an implementation against them.
+- **Small, explicit contracts.** Storage is one interface whose atomicity requirements are spelled out, such as single-use consumption of authorization codes and refresh tokens, and it will not gain methods. The `storagetest` package verifies an implementation against them.
+- **Fail-safe lists.** A nil or empty list of scopes or audiences always means none, so filtering everything out never grants more.
 - **The application owns the UI.** Valid authorization requests are handed to your code, which calls `Approve` or `Deny` when it is done.
 - **Two layers.** Mount the whole `Provider`, or build your own endpoints from the same building blocks: parse, adjust, complete and write each request yourself.
 - **Safe errors.** Clients only ever see RFC error codes and fixed descriptions; internal causes go to your logger.
@@ -70,6 +71,7 @@ mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 	err = provider.Approve(w, r, req, grantor.Approval{
 		Subject:  user.ID,
 		Scopes:   grantedScopes,
+		Audience: req.Audience, // nil would grant no audience
 		AuthTime: authTime,
 	})
 })
@@ -86,7 +88,7 @@ mux.HandleFunc("GET /oauth2/keys", provider.ServeJWKS)
 mux.Handle("POST /oauth2/token", rateLimit(http.HandlerFunc(provider.ServeToken)))
 ```
 
-The authorization and token endpoints can be written step by step. Requests are plain structs that you may adjust; grantor validates them again before completing them, so adjustments cannot weaken security:
+The authorization and token endpoints can be written step by step. Authorization requests are plain structs that you may adjust; grantor validates them again before completing them, so adjustments cannot weaken security. Token requests are narrowed in `Config.BeforeIssue`, which sees the parsed request:
 
 ```go
 mux.HandleFunc("/oauth2/authorize", func(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +100,7 @@ mux.HandleFunc("/oauth2/authorize", func(w http.ResponseWriter, r *http.Request)
 	req.Scopes = policy.Allowed(req.ClientID, req.Scopes) // narrow by policy
 	// Signed in, and no consent screen needed (also handle prompt=none and prompt=consent).
 	if user, ok := session(r); ok && !req.NeedsAuthentication(user.AuthTime) && hasConsent(user, req) {
-		approval := grantor.Approval{Subject: user.ID, Scopes: req.Scopes, AuthTime: user.AuthTime}
+		approval := grantor.Approval{Subject: user.ID, Scopes: req.Scopes, Audience: req.Audience, AuthTime: user.AuthTime}
 		if err := provider.Approve(w, r, req, approval); err != nil {
 			http.Error(w, "cannot complete sign-in", http.StatusInternalServerError)
 		}
@@ -134,6 +136,7 @@ cfg.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
 	if users.Disabled(ctx, is.Subject) { // runs for every grant type, including refreshes
 		return &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "the account is disabled"}
 	}
+	is.Scopes = policy.Allowed(is.Client.ID, is.Request.Form, is.Scopes) // may only narrow
 	return nil
 }
 cfg.Grants = map[grantor.GrantType]grantor.GrantFunc{
@@ -148,7 +151,7 @@ cfg.Grants = map[grantor.GrantType]grantor.GrantFunc{
 }
 ```
 
-[`examples/lowlevel`](examples/lowlevel) is a runnable provider built this way.
+[`examples/lowlevel`](examples/lowlevel) is a runnable provider built this way, and the package documentation has runnable examples for each building block.
 
 ## Example apps
 
@@ -209,11 +212,11 @@ cfg.AccessTokenFormats = map[grantor.AccessTokenFormat]grantor.AccessTokenEncode
 
 `SignFunc` refuses an empty `typ` and `JWT`, which ID tokens use. Access token claims are visible to the client, so they must not carry secrets.
 
-Approvals and custom grants choose audiences within `Client.Audience` with `Approval.Audience` and `Grant.Audience`. Refreshes and code exchanges fail once the client is no longer registered for a granted scope or audience.
+Approvals and custom grants choose audiences with `Approval.Audience` (within the request's `Audience`, which starts as `Client.Audience`) and `Grant.Audience` (within `Client.Audience`). A nil or empty audience grants none, and `Approve` rejects that for clients that use JWT access tokens. Refreshes and code exchanges fail once the client is no longer registered for a granted scope or audience.
 
 ## Storage
 
-Implement `grantor.Storage` (authorization requests, tokens, assertion replay protection) and `grantor.ClientStore` for your database, then run the conformance suite:
+Implement `grantor.Storage` (authorization requests, tokens, replay protection) and `grantor.ClientStore` for your database, then run the conformance suite:
 
 ```go
 func TestStorage(t *testing.T) {
@@ -222,6 +225,8 @@ func TestStorage(t *testing.T) {
 ```
 
 The suite checks round-tripping of every field, conflict and not-found semantics, grant revocation, and that concurrent consumption of a single-use token succeeds exactly once.
+
+`Storage` will not gain methods, so your implementation keeps compiling across upgrades. Records may gain fields, so persist every exported field (for example as a JSON column); the suite fails when a field does not round-trip. Future features that need other storage, such as sessions, take their own interface in an optional `Config` field.
 
 ## Multiple issuers
 

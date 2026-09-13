@@ -36,8 +36,12 @@
 //	err = provider.Approve(w, r, req, grantor.Approval{
 //		Subject:  user.ID,
 //		Scopes:   req.Scopes,
+//		Audience: req.Audience,
 //		AuthTime: authTime,
 //	})
+//
+// Lists of scopes and audiences select what they contain: nil and empty
+// both mean none.
 //
 // # Supported specifications
 //
