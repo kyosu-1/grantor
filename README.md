@@ -179,11 +179,13 @@ grantor.Client{
 
 Whatever the format, grantor stores every access token by its hash, so introspection, UserInfo, revocation and `Provider.ValidateAccessToken` (for resource servers in the same process) work the same way. Resource servers that validate JWT access tokens locally do not see revocations, so keep their lifetime short.
 
-`Config.BeforeIssue` shapes each issuance: it can narrow the audience, add claims to the access token and the ID token, change lifetimes, or pick another format:
+JWT access tokens need an audience: grantor never falls back to the client ID, which is the `aud` of ID tokens, so that one cannot be replayed as the other. For grants without an end-user, `sub` is the client ID, so keep client IDs distinct from subject identifiers.
+
+`Config.BeforeIssue` shapes each issuance: it can narrow the audience, add claims to the access token and the ID token, change lifetimes, or pick another format. It runs, and tokens are signed, before an authorization code or refresh token is consumed, so a failure leaves the grant usable for a retry:
 
 ```go
 cfg.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
-	is.AccessTokenClaims = map[string]any{"tenant": tenantOf(is.Subject)}
+	is.AccessTokenClaims["tenant"] = tenantOf(is.Subject)
 	if is.GrantType == grantor.GrantTypeClientCredentials {
 		is.AccessTokenLifetime = 5 * time.Minute
 	}
@@ -196,7 +198,7 @@ Custom formats are functions that receive the token's description and a function
 ```go
 cfg.AccessTokenFormats = map[grantor.AccessTokenFormat]grantor.AccessTokenEncoder{
 	"scp-jwt": func(ctx context.Context, at *grantor.AccessToken, sign grantor.SignFunc) (string, error) {
-		return sign("JWT", map[string]any{
+		return sign("at+jwt", map[string]any{
 			"iss": at.Issuer, "sub": at.Subject, "aud": at.Audience,
 			"scp": at.Scopes, "exp": at.ExpiresAt.Unix(), "jti": at.ID,
 		})
@@ -204,7 +206,9 @@ cfg.AccessTokenFormats = map[grantor.AccessTokenFormat]grantor.AccessTokenEncode
 }
 ```
 
-Approvals and custom grants choose audiences within `Client.Audience` with `Approval.Audience` and `Grant.Audience`.
+`SignFunc` refuses an empty `typ` and `JWT`, which ID tokens use. Access token claims are visible to the client, so they must not carry secrets.
+
+Approvals and custom grants choose audiences within `Client.Audience` with `Approval.Audience` and `Grant.Audience`. Refreshes and code exchanges fail once the client is no longer registered for a granted scope or audience.
 
 ## Storage
 

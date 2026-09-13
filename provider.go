@@ -41,7 +41,7 @@ type Issuer struct {
 }
 
 // Lifetimes configures how long issued artifacts stay valid. Zero values use
-// the defaults.
+// the defaults; token lifetimes must be at least a second.
 type Lifetimes struct {
 	AuthorizationRequest time.Duration // default 15 minutes
 	AuthorizationCode    time.Duration // default 1 minute
@@ -200,6 +200,11 @@ func New(cfg Config) (*Provider, error) {
 	setDefault(&cfg.Lifetimes.AccessToken, time.Hour)
 	setDefault(&cfg.Lifetimes.RefreshToken, 30*24*time.Hour)
 	setDefault(&cfg.Lifetimes.IDToken, time.Hour)
+	for _, d := range []time.Duration{cfg.Lifetimes.AccessToken, cfg.Lifetimes.RefreshToken, cfg.Lifetimes.IDToken} {
+		if !validLifetime(d) {
+			return nil, errors.New("grantor: Config.Lifetimes of tokens must be at least a second")
+		}
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}

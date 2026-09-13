@@ -43,7 +43,9 @@ const (
 	// the default.
 	AccessTokenFormatOpaque AccessTokenFormat = "opaque"
 	// AccessTokenFormatJWT issues JWT access tokens (RFC 9068), which
-	// resource servers can validate with the issuer's JWKS.
+	// resource servers can validate with the issuer's JWKS. They need an
+	// audience, and for grants without an end-user their sub is the client
+	// ID, so client IDs must not collide with subject identifiers.
 	AccessTokenFormatJWT AccessTokenFormat = "jwt"
 )
 
@@ -125,7 +127,7 @@ type Client struct {
 	// Audience lists the audiences, such as resource server URLs, that
 	// access tokens of the client may be issued for. Unless an approval, a
 	// custom grant or Config.BeforeIssue narrows it, tokens are issued for
-	// all of them. JWT access tokens without an audience use the client ID.
+	// all of them. JWT access tokens need at least one audience.
 	Audience []string
 
 	// Lifetimes of tokens issued to the client. Zero values use
@@ -230,8 +232,13 @@ func (c *Client) validate() error {
 	default:
 		return fmt.Errorf("client %q has unsupported auth method %q", c.ID, m)
 	}
-	if c.AccessTokenLifetime < 0 || c.RefreshTokenLifetime < 0 || c.IDTokenLifetime < 0 {
-		return fmt.Errorf("client %q has a negative token lifetime", c.ID)
+	for _, d := range []time.Duration{c.AccessTokenLifetime, c.RefreshTokenLifetime, c.IDTokenLifetime} {
+		if d != 0 && !validLifetime(d) {
+			return fmt.Errorf("client %q has a token lifetime that is neither zero nor at least a second", c.ID)
+		}
+	}
+	if c.AccessTokenFormat == AccessTokenFormatJWT && len(c.Audience) == 0 {
+		return fmt.Errorf("client %q uses JWT access tokens but has no Audience", c.ID)
 	}
 	switch c.PKCE {
 	case "", PKCERequired:

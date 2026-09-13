@@ -32,7 +32,7 @@ Out of scope: RFC 8707 resource parameters (the audience API is ready for them),
 | A3 | Encoders receive a `SignFunc` bound to the issuer's keys and the client's access token signing algorithm. | Custom JWT layouts (for example an `scp` array or other header types) reuse key management and rotation. |
 | A4 | The format is chosen per client (`Client.AccessTokenFormat`), defaulting to `Config.AccessTokenFormat`, and may be changed per issuance by `BeforeIssue`. | Per-client and per-grant control without extra configuration types. |
 | A5 | Audience is part of the grant: `Client.Audience` lists allowed audiences and is the default; `Approval.Audience` and `Grant.Audience` choose a subset; `BeforeIssue` may narrow it. Stored in `Token.Audience` and carried through refreshes. | Keeps the "only narrow within the registration" invariant; RFC 8707 can later fill `Approval.Audience` from `resource` parameters. |
-| A6 | JWT access tokens without an audience use the client ID as `aud`. | RFC 9068 requires `aud`; the client is the only default resource indicator that always exists. |
+| A6 | JWT access tokens need an audience; issuing one without is a `server_error`, and a client with `AccessTokenFormat: jwt` and no `Audience` is misconfigured. *(Revised after review: the first version defaulted to the client ID.)* | ID tokens use the client ID as `aud`, so that default made JWT access tokens and ID tokens interchangeable for verifiers that ignore `typ` (RFC 9068 §5, RFC 8725 §2.8). |
 | A7 | Extra claims are set per issuance by `BeforeIssue` (`AccessTokenClaims`, `IDTokenClaims`). Access token claims are stored with the access token and returned by introspection. Setting a protocol claim is a server error. | One customization point; surfacing misuse instead of silently dropping it. |
 | A8 | Lifetimes: `Client.AccessTokenLifetime`, `RefreshTokenLifetime`, `IDTokenLifetime` override `Config.Lifetimes`; `BeforeIssue` may set any positive lifetime per issuance. | Lifetimes are policy, not a security boundary between client and provider; the hook knows the grant type. |
 | A9 | `Client.AccessTokenSigningAlg` selects the JWS algorithm of JWT access tokens, defaulting to RS256. | Same rules as `IDTokenSigningAlg`; RFC 9068 requires RS256 support. |
@@ -63,7 +63,7 @@ type AccessToken struct {
 	Issuer    string
 	ClientID  string
 	Subject   string    // empty when no end-user is involved
-	Audience  []string  // the granted audience, or the client ID when none was granted
+	Audience  []string  // the granted audience; never empty for JWT access tokens
 	Scopes    []string
 	GrantType GrantType
 	AuthTime  time.Time
@@ -125,7 +125,7 @@ After `BeforeIssue` returns, grantor rejects with `server_error`: added scopes o
 ### JWT access tokens (RFC 9068)
 
 Header: `typ: at+jwt`, `kid`, `alg` from `Client.AccessTokenSigningAlg`.
-Claims: `iss`, `sub` (the end-user, or the client ID for grants without one), `aud` (a string when there is one audience, otherwise an array), `exp`, `iat`, `jti`, `client_id`, `scope` (space-separated, omitted when empty), `auth_time`/`acr`/`amr` when present, then `AccessTokenClaims`.
+Claims: `iss`, `sub` (the end-user, or the client ID for grants without one), `aud` (the granted audience, required; a string when there is one audience, otherwise an array), `exp`, `iat`, `jti`, `client_id`, `scope` (space-separated, omitted when empty), `auth_time`/`acr`/`amr` when present, then `AccessTokenClaims`.
 
 ### Introspection
 
@@ -138,6 +138,18 @@ Active access tokens additionally return `aud` (a string or an array) when they 
 // active access token of the issuer that r belongs to, or ErrNotFound.
 func (p *Provider) ValidateAccessToken(r *http.Request, token string) (*Token, error)
 ```
+
+## Review follow-ups
+
+The code review of the first implementation led to these additional rules:
+
+- **Mint before consume.** `mintTokens` encodes the access token, fetches claims and signs the ID token without storing anything; code exchange and refresh consume their single-use token only afterwards, then `storeTokens` stores the records. An encoder or KMS failure no longer burns the code or refresh token (which made the retry revoke the grant).
+- **Audience re-check.** Code exchange and refresh reject grants with audiences the client is no longer registered for (`invalid_grant`), as they do for scopes.
+- **Claims are JSON.** `BeforeIssue` claims are round-tripped through JSON during planning: unserializable claims fail before consume, numbers become `float64` everywhere, nil values are dropped, and the stored maps share nothing with the hook. `Issuance` claim maps start empty.
+- **Encoders get a copy.** Changes an encoder makes to `AccessToken` (claims, expiry, audience, scopes) do not reach the stored record.
+- **Explicit typing.** `SignFunc` refuses an empty `typ`, `JWT` and `application/jwt`.
+- **Lifetimes of at least a second** for hooks, clients and `Config.Lifetimes`, since `expires_in` and `exp` count whole seconds.
+- `Grant.Audience` outside the registration fails with `invalid_target`; `IDTokenClaims` take precedence over `Config.Claims`.
 
 ## Data flow
 

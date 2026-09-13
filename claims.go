@@ -2,6 +2,7 @@ package grantor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -135,4 +136,52 @@ func requestedEssentialACR(c *ClaimsRequest) (values []string, essential bool) {
 		}
 	}
 	return values, true
+}
+
+// normalizeClaims returns claims as decoded JSON, or nil when there are none.
+// Claims that cannot be serialized fail before any token is issued, the
+// result shares nothing with the caller's map, and encoders, storage and
+// responses all see the same values. Claims with nil values are dropped, as
+// they are for Config.Claims.
+func normalizeClaims(claims map[string]any) (map[string]any, error) {
+	if len(claims) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(claims)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	for name, value := range out {
+		if value == nil {
+			delete(out, name)
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// copyJSON deep-copies a value decoded from JSON.
+func copyJSON(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(v))
+		for name, value := range v {
+			m[name] = copyJSON(value)
+		}
+		return m
+	case []any:
+		s := make([]any, len(v))
+		for i, value := range v {
+			s[i] = copyJSON(value)
+		}
+		return s
+	default:
+		return v
+	}
 }

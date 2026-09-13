@@ -203,7 +203,7 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 	if perr := p.checkUnused(ctx, t); perr != nil {
 		return nil, perr
 	}
-	if perr := checkClientScopes(client, t.Scopes); perr != nil {
+	if perr := checkClientGrant(client, t); perr != nil {
 		return nil, perr
 	}
 	accessScopes, perr := narrowScopes(t.Scopes, req.Scopes)
@@ -212,19 +212,24 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 	}
 	withRefresh := client.allowsGrant(GrantTypeRefreshToken) &&
 		(!t.HasScope("openid") || t.HasScope("offline_access"))
-	// The hook runs before the code is consumed, so that a failing hook does
-	// not turn the client's retry into a reuse that revokes the grant.
+	// The hook runs and the tokens are minted before the code is consumed,
+	// so that a failing hook, encoder or signing key does not turn the
+	// client's retry into a reuse that revokes the grant.
 	plan, perr := p.planIssuance(ctx, iss, client, t, req.GrantType, accessScopes, withRefresh)
+	if perr != nil {
+		return nil, perr
+	}
+	// OpenID Connect Core section 3.1.3.3: a successful code exchange for an
+	// OpenID Connect request returns an ID token, even if the access token
+	// scope was narrowed.
+	minted, perr := p.mintTokens(ctx, iss, client, t, plan, t.HasScope("openid"), t.Nonce, req.GrantType)
 	if perr != nil {
 		return nil, perr
 	}
 	if perr := p.consume(ctx, hash); perr != nil {
 		return nil, perr
 	}
-	// OpenID Connect Core section 3.1.3.3: a successful code exchange for an
-	// OpenID Connect request returns an ID token, even if the access token
-	// scope was narrowed.
-	return p.mintTokens(ctx, iss, client, t, plan, t.HasScope("openid"), t.Nonce, req.GrantType)
+	return p.storeTokens(ctx, minted)
 }
 
 func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
@@ -249,20 +254,25 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, 
 	if perr != nil {
 		return nil, perr
 	}
-	if perr := checkClientScopes(client, t.Scopes); perr != nil {
+	if perr := checkClientGrant(client, t); perr != nil {
 		return nil, perr
 	}
 	plan, perr := p.planIssuance(ctx, iss, client, t, req.GrantType, accessScopes, true)
 	if perr != nil {
 		return nil, perr
 	}
+	// Refresh tokens are rotated on every use; the new refresh token keeps
+	// the scope and audience of the grant, while the access token may be
+	// narrowed. As for codes, tokens are minted before the old refresh token
+	// is consumed.
+	minted, perr := p.mintTokens(ctx, iss, client, t, plan, slices.Contains(plan.scopes, "openid"), "", req.GrantType)
+	if perr != nil {
+		return nil, perr
+	}
 	if perr := p.consume(ctx, hash); perr != nil {
 		return nil, perr
 	}
-	// Refresh tokens are rotated on every use; the new refresh token keeps
-	// the scope and audience of the grant, while the access token may be
-	// narrowed.
-	return p.mintTokens(ctx, iss, client, t, plan, slices.Contains(plan.scopes, "openid"), "", req.GrantType)
+	return p.storeTokens(ctx, minted)
 }
 
 func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
@@ -299,12 +309,17 @@ func narrowScopes(allowed, requested []string) ([]string, *Error) {
 	return out, nil
 }
 
-// checkClientScopes rejects a grant whose scopes the client is no longer
-// registered for.
-func checkClientScopes(client *Client, scopes []string) *Error {
-	for _, s := range scopes {
+// checkClientGrant rejects a grant whose scopes or audiences the client is no
+// longer registered for.
+func checkClientGrant(client *Client, grant *Token) *Error {
+	for _, s := range grant.Scopes {
 		if !slices.Contains(client.Scopes, s) {
 			return newError(CodeInvalidScope, "the client may no longer request the granted scope")
+		}
+	}
+	for _, a := range grant.Audience {
+		if !slices.Contains(client.Audience, a) {
+			return errInvalidGrant("the client may no longer access the granted audience")
 		}
 	}
 	return nil
@@ -376,41 +391,51 @@ func (p *Provider) issueTokens(ctx context.Context, iss *resolvedIssuer, client 
 	if perr != nil {
 		return nil, perr
 	}
-	return p.mintTokens(ctx, iss, client, grant, plan, slices.Contains(plan.scopes, "openid"), "", grantType)
+	minted, perr := p.mintTokens(ctx, iss, client, grant, plan, slices.Contains(plan.scopes, "openid"), "", grantType)
+	if perr != nil {
+		return nil, perr
+	}
+	return p.storeTokens(ctx, minted)
 }
 
-// mintTokens creates and stores the access token, and optionally a refresh
-// token and an ID token, that plan describes for grant. Every grant type
-// issues tokens here after Config.BeforeIssue has run.
-func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, plan *issuePlan, withIDToken bool, nonce string, grantType GrantType) (*TokenResponse, *Error) {
+// mintedTokens are issued tokens that have not been stored yet.
+type mintedTokens struct {
+	resp    *TokenResponse
+	records []*Token
+}
+
+// mintTokens creates the access token, and optionally a refresh token and an
+// ID token, that plan describes for grant. It runs access token encoders,
+// Config.Claims and signing, which may all fail, and stores nothing, so that
+// grants consume their single-use token only after it succeeded; storeTokens
+// stores the result. Every grant type issues tokens here after
+// Config.BeforeIssue has run.
+func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, plan *issuePlan, withIDToken bool, nonce string, grantType GrantType) (*mintedTokens, *Error) {
 	now := p.now()
-	audience := plan.audience
-	if len(audience) == 0 {
-		audience = []string{client.ID}
-	}
+	expiresAt := now.Add(plan.accessLifetime)
 	at := &AccessToken{
 		ID:        randomToken(),
 		Issuer:    iss.url,
 		ClientID:  client.ID,
 		Subject:   grant.Subject,
-		Audience:  slices.Clone(audience),
-		Scopes:    slices.Clone(plan.scopes),
+		Audience:  plan.audience,
+		Scopes:    plan.scopes,
 		GrantType: grantType,
 		AuthTime:  grant.AuthTime,
 		ACR:       grant.ACR,
-		AMR:       slices.Clone(grant.AMR),
+		AMR:       grant.AMR,
 		IssuedAt:  now,
-		ExpiresAt: now.Add(plan.accessLifetime),
+		ExpiresAt: expiresAt,
 		Claims:    plan.accessClaims,
 	}
-	accessToken, err := p.encodeAccessToken(ctx, iss, client, plan.format, at)
+	accessToken, err := p.encodeAccessToken(ctx, iss, client, plan.format, at.clone())
 	if err != nil {
 		return nil, errServer(err)
 	}
 	resp := &TokenResponse{
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
-		ExpiresIn:   int64(plan.accessLifetime.Seconds()),
+		ExpiresIn:   int64(plan.accessLifetime / time.Second),
 		Scope:       strings.Join(plan.scopes, " "),
 	}
 
@@ -430,14 +455,14 @@ func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *
 	access := derive(accessToken, TokenTypeAccessToken, plan.scopes)
 	access.Audience = plan.audience
 	access.AccessTokenClaims = plan.accessClaims
-	access.ExpiresAt = at.ExpiresAt
-	toStore := []*Token{access}
+	access.ExpiresAt = expiresAt
+	minted := &mintedTokens{resp: resp, records: []*Token{access}}
 
 	if plan.refresh {
 		refreshToken := randomToken()
 		refresh := derive(refreshToken, TokenTypeRefreshToken, grant.Scopes)
 		refresh.ExpiresAt = now.Add(plan.refreshLifetime)
-		toStore = append(toStore, refresh)
+		minted.records = append(minted.records, refresh)
 		resp.RefreshToken = refreshToken
 	}
 
@@ -448,11 +473,15 @@ func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *
 		}
 		resp.IDToken = idToken
 	}
+	return minted, nil
+}
 
-	for _, t := range toStore {
+// storeTokens stores minted tokens and returns their token response.
+func (p *Provider) storeTokens(ctx context.Context, minted *mintedTokens) (*TokenResponse, *Error) {
+	for _, t := range minted.records {
 		if err := p.cfg.Storage.CreateToken(ctx, t); err != nil {
 			return nil, errServer(err)
 		}
 	}
-	return resp, nil
+	return minted.resp, nil
 }
