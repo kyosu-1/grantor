@@ -110,7 +110,8 @@ type Client struct {
 
 	// RequirePushedAuthorizationRequests accepts authorization requests of
 	// the client only through the pushed authorization request endpoint
-	// (RFC 9126). Config.PAR must enable pushed authorization requests.
+	// (RFC 9126). Config.PAR must enable pushed authorization requests;
+	// otherwise the client is misconfigured and fails at every endpoint.
 	RequirePushedAuthorizationRequests bool
 
 	// IDTokenSigningAlg is the JWS algorithm for ID tokens issued to this

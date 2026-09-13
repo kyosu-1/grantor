@@ -6,11 +6,15 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/kyosu-1/grantor"
 	"github.com/kyosu-1/grantor/memory"
@@ -238,7 +242,11 @@ func TestPushedAuthorizationRedemptionErrors(t *testing.T) {
 
 	uri := e.pushFor(authParams(confidentialClient, "openid", pkcePair{}))
 	errorPage("unknown request_uri", redeem("urn:ietf:params:oauth:request_uri:unknown"), "invalid_request_uri")
-	errorPage("other URI scheme", redeem("https://client.example.com/request.jwt"), "invalid_request_uri")
+	errorPage("malformed reference", redeem("urn:ietf:params:oauth:request_uri:"+strings.Repeat("é", 2500)), "invalid_request_uri")
+	// request_uri values that PAR did not issue are still unsupported.
+	if p := redirectParams(t, e.get(grantor.PathAuthorization, withParam(authParams(confidentialClient, "openid", pkcePair{}), "request_uri", "https://client.example.com/request.jwt"))); p.Get("error") != "request_uri_not_supported" {
+		t.Errorf("request_uri by reference = %v", p)
+	}
 	errorPage("missing client_id", url.Values{"request_uri": {uri}}, "invalid_request")
 	errorPage("another client", url.Values{"client_id": {postClient}, "request_uri": {uri}}, "invalid_request_uri")
 	// A mismatch does not consume the request_uri.
@@ -304,5 +312,185 @@ func TestRequestURIWithoutPAR(t *testing.T) {
 	q := withParam(authParams(confidentialClient, "openid", pkcePair{}), "request_uri", "urn:ietf:params:oauth:request_uri:x")
 	if p := redirectParams(t, e.get(grantor.PathAuthorization, q)); p.Get("error") != "request_uri_not_supported" {
 		t.Fatalf("request_uri while PAR is disabled = %v", p)
+	}
+}
+
+// A request from the PAR endpoint has no browser behind it and must never be
+// completed directly.
+func TestPushedRequestCannotBeCompletedDirectly(t *testing.T) {
+	e := parEnv(t, grantor.PARAllowed)
+	var parsed *grantor.AuthorizationRequest
+	e.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := e.p.ParsePushedAuthorizationRequest(r)
+		if err != nil {
+			e.p.WriteTokenError(w, r, err)
+			return
+		}
+		parsed = req
+		if err := e.p.Approve(w, r, req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err == nil {
+			t.Error("Approve completed a request from ParsePushedAuthorizationRequest")
+		}
+		if err := e.p.Deny(w, r, req, nil); err == nil {
+			t.Error("Deny completed a request from ParsePushedAuthorizationRequest")
+		}
+		if err := e.p.SaveAuthorizationRequest(w, r, req); err == nil {
+			t.Error("SaveAuthorizationRequest saved a request from ParsePushedAuthorizationRequest")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if status, body, _ := e.push(authParams(confidentialClient, "openid", pkcePair{}), basic(confidentialClient, confidentialSecret)); status != http.StatusNoContent || parsed == nil {
+		t.Fatalf("custom PAR endpoint = %d %v", status, body)
+	}
+}
+
+// PushAuthorizationRequest validates what the application changed.
+func TestPushAuthorizationRequestChecks(t *testing.T) {
+	e := parEnv(t, grantor.PARAllowed)
+	disabled := e.build(func(c *grantor.Config) { c.PAR = grantor.PARDisabled })
+	for name, tc := range map[string]struct {
+		edit     func(*grantor.AuthorizationRequest)
+		provider *grantor.Provider
+	}{
+		"unregistered scope": {edit: func(req *grantor.AuthorizationRequest) { req.Scopes = append(req.Scopes, "admin") }},
+		"another client":     {edit: func(req *grantor.AuthorizationRequest) { req.ClientID = postClient }},
+		"already saved":      {edit: func(req *grantor.AuthorizationRequest) { req.ID = "saved" }},
+		"PAR disabled":       {edit: func(*grantor.AuthorizationRequest) {}, provider: disabled},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req, err := e.p.ParsePushedAuthorizationRequest(r)
+				if err != nil {
+					t.Fatalf("parse: %v", err)
+				}
+				tc.edit(req)
+				p := e.p
+				if tc.provider != nil {
+					p = tc.provider
+				}
+				if _, err := p.PushAuthorizationRequest(r, req); err == nil {
+					t.Error("PushAuthorizationRequest accepted the request")
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})
+			e.push(authParams(confidentialClient, "openid", pkcePair{}), basic(confidentialClient, confidentialSecret))
+		})
+	}
+	r := httptest.NewRequest(http.MethodPost, testIssuer+grantor.PathPushedAuthorization, strings.NewReader(authParams(confidentialClient, "openid", pkcePair{}).Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.SetBasicAuth(confidentialClient, confidentialSecret)
+	if _, err := disabled.ParsePushedAuthorizationRequest(r); err == nil {
+		t.Error("ParsePushedAuthorizationRequest succeeded while PAR is disabled")
+	}
+}
+
+func TestPushedAuthorizationRedemptionDetails(t *testing.T) {
+	e := parEnv(t, grantor.PARAllowed)
+
+	// Redeemed requests get fresh timestamps and can be approved directly.
+	uri := e.pushFor(authParams(confidentialClient, "openid", pkcePair{}))
+	e.clock.Advance(30 * time.Second)
+	e.handler = e.authorizeHandler(func(w http.ResponseWriter, r *http.Request, req *grantor.AuthorizationRequest) {
+		if !req.CreatedAt.Equal(e.clock.Now()) {
+			t.Errorf("CreatedAt = %v, want the time of redemption %v", req.CreatedAt, e.clock.Now())
+		}
+		if err := e.p.Approve(w, r, req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
+			t.Errorf("Approve of a redeemed request: %v", err)
+		}
+	})
+	if p := redirectParams(t, e.get(grantor.PathAuthorization, url.Values{"client_id": {confidentialClient}, "request_uri": {uri}})); p.Get("code") == "" {
+		t.Fatalf("direct approval = %v", p)
+	}
+	e.handler = e.p
+
+	// A record with a par: ID that was not pushed is not redeemable.
+	ref := strings.Repeat("A", 43)
+	if err := e.store.CreateAuthorizationRequest(context.Background(), &grantor.AuthorizationRequest{
+		ID: "par:" + ref, Issuer: testIssuer, ClientID: confidentialClient, RedirectURI: clientRedirect,
+		ResponseType: "code", ResponseMode: "query", CreatedAt: e.clock.Now(), ExpiresAt: e.clock.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := e.get(grantor.PathAuthorization, url.Values{"client_id": {confidentialClient}, "request_uri": {"urn:ietf:params:oauth:request_uri:" + ref}}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("record that was not pushed = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Changing Pushed is detected on saved and unsaved requests.
+	saved := e.startAuthorization(url.Values{"client_id": {confidentialClient}, "request_uri": {e.pushFor(authParams(confidentialClient, "openid", pkcePair{}))}})
+	saved.Pushed = false
+	if _, err := e.approve(saved, grantor.Approval{Subject: "alice", Scopes: saved.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestModified) {
+		t.Errorf("saved request with Pushed changed: %v", err)
+	}
+	e.handler = e.authorizeHandler(func(w http.ResponseWriter, r *http.Request, req *grantor.AuthorizationRequest) {
+		req.Pushed = true
+		if err := e.p.Approve(w, r, req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrInvalidAuthorizationRequest) {
+			t.Errorf("unsaved request with Pushed set: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	e.get(grantor.PathAuthorization, authParams(confidentialClient, "openid", pkcePair{}))
+}
+
+// The PAR requirement holds for requests the application changes or builds.
+func TestPushedAuthorizationRequirementOnCompletion(t *testing.T) {
+	e := parEnv(t, grantor.PARAllowed)
+	c, err := e.store.Client(context.Background(), testIssuer, publicClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ID = "par-only"
+	c.RequirePushedAuthorizationRequests = true
+	e.store.SetClient(testIssuer, *c)
+	e.handler = e.authorizeHandler(func(w http.ResponseWriter, r *http.Request, req *grantor.AuthorizationRequest) {
+		req.ClientID = "par-only"
+		if err := e.p.Approve(w, r, req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrInvalidAuthorizationRequest) {
+			t.Errorf("request switched to a client that requires PAR: Approve = %v", err)
+		}
+		if err := e.p.SaveAuthorizationRequest(w, r, &grantor.AuthorizationRequest{ClientID: "par-only", Issuer: testIssuer}); err == nil {
+			t.Error("SaveAuthorizationRequest saved a request the application built")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	e.get(grantor.PathAuthorization, authParams(publicClient, "openid", newPKCE()))
+}
+
+func TestPushedAuthorizationPathWhileDisabled(t *testing.T) {
+	testKeys(t)
+	store := memory.New()
+	p, err := grantor.New(grantor.Config{
+		Issuer:    &grantor.Issuer{URL: testIssuer, Keys: []grantor.SigningKey{{ID: "k", Signer: rsaKey}}},
+		Clients:   store,
+		Storage:   store,
+		Endpoints: grantor.Endpoints{Revocation: "/par"},
+	})
+	if err != nil {
+		t.Fatalf("a disabled PAR endpoint reserved its path: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, testIssuer+"/par", strings.NewReader("token=x")))
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("revocation at /par = %d", rec.Code)
+	}
+}
+
+// Large client assertions are accepted at the PAR endpoint, as at the token
+// endpoint.
+func TestPushedAuthorizationLargeClientAssertion(t *testing.T) {
+	e := parEnv(t, grantor.PARAllowed)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: clientEC}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "client-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
+		Issuer: jwtClient, Subject: jwtClient, Audience: jwt.Audience{testIssuer},
+		Expiry: jwt.NewNumericDate(e.clock.Now().Add(time.Minute)), ID: "large-assertion",
+	}).Claims(map[string]any{"x5c_like": strings.Repeat("A", 10000)}).Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := authParams(jwtClient, "openid", newPKCE())
+	form.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+	form.Set("client_assertion", assertion)
+	if status, body, _ := e.push(form, nil); status != http.StatusCreated {
+		t.Fatalf("push with a %d-byte client assertion = %d %v", len(assertion), status, body)
 	}
 }

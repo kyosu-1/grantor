@@ -13,7 +13,8 @@ minor versions may contain breaking changes.
 
 ### Changed
 
-- `Storage` documents that authorization request IDs are ASCII strings of at most 64 bytes; `storagetest` checks such IDs.
+- `Storage` documents that authorization request IDs are ASCII strings of at most 64 bytes; pushed requests use IDs such as `par:` followed by 43 characters, and `storagetest` checks such IDs. Storage implementations that map fields to columns must also persist `AuthorizationRequest.Pushed`.
+- `SaveAuthorizationRequest` only accepts requests returned by `ParseAuthorizationRequest`, as `Approve` and `Deny` already did.
 
 ## [0.1.0] - 2026-09-14
 

@@ -32,6 +32,9 @@ const (
 	// pushedIDPrefix is the prefix of the storage IDs of pushed requests.
 	// The IDs of pending requests are base64url and never contain a colon.
 	pushedIDPrefix = "par:"
+	// pushedRefLength is the length of the random part of a request_uri: the
+	// base64url encoding of the 32 bytes of randomToken.
+	pushedRefLength = 43
 )
 
 // PushedAuthorizationResponse is a successful response of the pushed
@@ -78,7 +81,8 @@ func (p *Provider) servePushedAuthorization(w http.ResponseWriter, r *http.Reque
 // ParsePushedAuthorizationRequest authenticates the client of a pushed
 // authorization request and validates the request like an authorization
 // request. Adjust the result if needed and store it with
-// PushAuthorizationRequest. Write errors with WriteTokenError.
+// PushAuthorizationRequest; it cannot be approved, denied or saved. Write
+// errors with WriteTokenError.
 func (p *Provider) ParsePushedAuthorizationRequest(r *http.Request) (*AuthorizationRequest, error) {
 	iss, err := p.issuerFor(r)
 	if err != nil {
@@ -109,12 +113,10 @@ func (p *Provider) parsePushedAuthorization(w http.ResponseWriter, r *http.Reque
 	if perr != nil {
 		return nil, perr
 	}
-	// RFC 9126 section 2.1: client_id is required, and request_uri must not
-	// be pushed.
-	switch {
-	case q.get("client_id") != client.ID:
-		return nil, errInvalidRequest("client_id is required and must identify the authenticated client")
-	case q.has("request_uri"):
+	// RFC 9126 section 2.1: request_uri must not be pushed. client_id is
+	// required and must name the authenticated client, which
+	// authenticateClient and authorizationTarget already enforce.
+	if q.has("request_uri") {
 		return nil, errInvalidRequest("request_uri must not be pushed")
 	}
 	_, target, perr := p.authorizationTarget(r.Context(), iss, q)
@@ -125,6 +127,9 @@ func (p *Provider) parsePushedAuthorization(w http.ResponseWriter, r *http.Reque
 	if perr != nil {
 		return nil, perr
 	}
+	// The request can only be pushed, never completed in this HTTP request,
+	// which has no browser behind it.
+	req.parsed = false
 	req.pushedBy = client.ID
 	return req, nil
 }
@@ -210,7 +215,7 @@ func (p *Provider) redeemPushedRequest(r *http.Request, iss *resolvedIssuer, q p
 		return nil, page(errInvalidRequest("client_id is required"))
 	}
 	ref, ok := strings.CutPrefix(q.get("request_uri"), requestURIPrefix)
-	if !ok || ref == "" {
+	if !ok || len(ref) != pushedRefLength || !isUnreserved(ref) {
 		return nil, invalidURI
 	}
 	pushed, err := p.cfg.Storage.AuthorizationRequest(ctx, pushedIDPrefix+ref)
@@ -254,6 +259,7 @@ func (p *Provider) redeemPushedRequest(r *http.Request, iss *resolvedIssuer, q p
 	req := *pushed
 	req.ID = ""
 	req.parsed = true
+	req.redeemed = true
 	req.CreatedAt = now
 	req.ExpiresAt = now.Add(p.cfg.Lifetimes.AuthorizationRequest)
 	return &req, nil

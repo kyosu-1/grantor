@@ -255,8 +255,8 @@ func (p *Provider) completable(w http.ResponseWriter, r *http.Request, req *Auth
 		}
 		current = stored
 	} else {
-		if !req.parsed {
-			return nil, nil, nil, errors.New("grantor: an unsaved authorization request must come from ParseAuthorizationRequest")
+		if err := checkUnsaved(req); err != nil {
+			return nil, nil, nil, err
 		}
 		copied := *req
 		current = &copied
@@ -292,6 +292,19 @@ func subsetOf(allowed, requested []string) ([]string, bool) {
 		}
 	}
 	return out, true
+}
+
+// checkUnsaved rejects unsaved requests that ParseAuthorizationRequest did
+// not return, and requests that claim to be pushed without having been
+// redeemed from a request_uri.
+func checkUnsaved(req *AuthorizationRequest) error {
+	switch {
+	case !req.parsed:
+		return errors.New("grantor: an unsaved authorization request must come from ParseAuthorizationRequest")
+	case req.Pushed != req.redeemed:
+		return invalidRequest("Pushed was changed")
+	}
+	return nil
 }
 
 func invalidRequest(reason string) error {
@@ -339,6 +352,9 @@ func (p *Provider) checkRequest(iss *resolvedIssuer, client *Client, req *Author
 		if !validScopeToken(s) || !slices.Contains(client.Scopes, s) {
 			return invalid("a scope is not registered for the client")
 		}
+	}
+	if !req.Pushed && p.parRequired(client) {
+		return invalid("the client must use pushed authorization requests")
 	}
 	if _, ok := subsetOf(client.Audience, req.Audience); !ok {
 		return invalid("an audience is not registered for the client")

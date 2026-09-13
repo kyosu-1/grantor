@@ -90,13 +90,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Write(body)
 }
 
-// WriteTokenError writes an RFC 6749 section 5.2 error response for the
-// token endpoint. Errors that are not an *Error are logged and sent as
-// server_error.
+// WriteTokenError writes an RFC 6749 section 5.2 error response, as the
+// token endpoint and the pushed authorization request endpoint use. Errors
+// that are not an *Error are logged and sent as server_error.
 func (p *Provider) WriteTokenError(w http.ResponseWriter, r *http.Request, err error) {
 	e := asProtocolError(err)
 	if e.Code == CodeServerError {
-		p.logError(r.Context(), "token endpoint", err)
+		p.logError(r.Context(), "endpoint", err)
 	}
 	body := map[string]string{"error": e.Code}
 	if e.Description != "" {

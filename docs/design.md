@@ -132,7 +132,7 @@ For the code flow, scope claims are returned from UserInfo and not put in the ID
 
 ## Not yet implemented
 
-- Request objects and `request_uri` (rejected with `request_not_supported` / `request_uri_not_supported`)
+- Request objects, and `request_uri` values other than those of the PAR endpoint (rejected with `request_not_supported` / `request_uri_not_supported`)
 - Resource indicators, DPoP, mutual TLS
 - Pairwise subject identifiers, session management and logout specifications
 - Dynamic client registration

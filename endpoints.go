@@ -44,9 +44,13 @@ func (e *Endpoints) setDefaults() {
 	}
 }
 
-func (e *Endpoints) validate() error {
+func (e *Endpoints) validate(par bool) error {
+	paths := []string{e.Authorization, e.Token, e.UserInfo, e.Introspection, e.Revocation, e.JWKS}
+	if par {
+		paths = append(paths, e.PushedAuthorization)
+	}
 	seen := map[string]bool{}
-	for _, path := range []string{e.Authorization, e.Token, e.UserInfo, e.Introspection, e.Revocation, e.JWKS, e.PushedAuthorization} {
+	for _, path := range paths {
 		if !strings.HasPrefix(path, "/") || (&url.URL{Path: path}).EscapedPath() != path {
 			return fmt.Errorf("endpoint path %q must start with / and contain only path characters", path)
 		}

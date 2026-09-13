@@ -44,6 +44,11 @@ var authorizationParams = map[string]bool{
 	"request": true, "request_uri": true,
 }
 
+// clientCredentialParams are the parameters that authenticate a client.
+var clientCredentialParams = map[string]bool{
+	"client_secret": true, "client_assertion": true, "client_assertion_type": true,
+}
+
 // Limits for AuthorizationRequest.Extra, which is stored with the request.
 const (
 	maxExtraParams = 32
@@ -74,6 +79,11 @@ func (e *authorizationError) Unwrap() error { return e.err }
 // after a login page. Write errors with WriteAuthorizationError, which
 // redirects them to the client when that is safe.
 //
+// A request that refers to a pushed authorization request with request_uri
+// uses it up: parsing the same URL again fails with invalid_request_uri. So
+// approve, deny or save the result within the same HTTP request, and
+// continue later from the saved request, not by parsing the original URL.
+//
 // AuthorizationRequest.Extra keeps up to 32 unprocessed parameters of up to
 // 1024 bytes each; credential parameters such as client_secret are dropped.
 func (p *Provider) ParseAuthorizationRequest(r *http.Request) (*AuthorizationRequest, error) {
@@ -97,7 +107,7 @@ func (p *Provider) parseAuthorization(r *http.Request, iss *resolvedIssuer) (*Au
 	default:
 		return nil, &authorizationError{err: &Error{Code: CodeInvalidRequest, Description: "method not allowed", StatusCode: http.StatusMethodNotAllowed}, iss: iss}
 	}
-	if p.cfg.PAR != PARDisabled && q.has("request_uri") {
+	if p.cfg.PAR != PARDisabled && strings.HasPrefix(q.get("request_uri"), requestURIPrefix) {
 		return p.redeemPushedRequest(r, iss, q)
 	}
 	client, target, perr := p.authorizationTarget(r.Context(), iss, q)
@@ -143,6 +153,9 @@ func (p *Provider) SaveAuthorizationRequest(w http.ResponseWriter, r *http.Reque
 	}
 	if req.ID != "" {
 		return errors.New("grantor: authorization request is already saved")
+	}
+	if err := checkUnsaved(req); err != nil {
+		return err
 	}
 	client, err := p.client(r.Context(), iss, req.ClientID)
 	if err != nil {
@@ -282,8 +295,10 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 	if len(q.repeated) > 0 {
 		return nil, errInvalidRequest("parameters must not be repeated")
 	}
-	for _, v := range q.values {
-		if len(v) > maxParamLength {
+	for name, v := range q.values {
+		// Client credentials at the pushed authorization request endpoint,
+		// such as assertions with certificate chains, are not limited here.
+		if len(v) > maxParamLength && !clientCredentialParams[name] {
 			return nil, errInvalidRequest("a parameter is too long")
 		}
 	}

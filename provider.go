@@ -206,7 +206,7 @@ func New(cfg Config) (*Provider, error) {
 		cfg.AccessTokenFormat = AccessTokenFormatOpaque
 	}
 	cfg.Endpoints.setDefaults()
-	if err := cfg.Endpoints.validate(); err != nil {
+	if err := cfg.Endpoints.validate(cfg.PAR != PARDisabled); err != nil {
 		return nil, fmt.Errorf("grantor: %w", err)
 	}
 	setDefault(&cfg.Lifetimes.AuthorizationRequest, 15*time.Minute)
@@ -328,6 +328,10 @@ func (p *Provider) route(w http.ResponseWriter, r *http.Request, iss *resolvedIs
 		return
 	}
 	e := &p.cfg.Endpoints
+	if p.cfg.PAR != PARDisabled && rel == e.PushedAuthorization {
+		p.servePushedAuthorization(w, r, iss)
+		return
+	}
 	switch rel {
 	case e.Authorization:
 		p.serveAuthorization(w, r, iss)
@@ -341,8 +345,6 @@ func (p *Provider) route(w http.ResponseWriter, r *http.Request, iss *resolvedIs
 		p.serveRevocation(w, r, iss)
 	case e.JWKS:
 		p.serveJWKS(w, r, iss)
-	case e.PushedAuthorization:
-		p.servePushedAuthorization(w, r, iss)
 	case PathOpenIDConfiguration:
 		p.serveDiscovery(w, r, iss)
 	default:

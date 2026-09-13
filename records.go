@@ -71,6 +71,9 @@ type AuthorizationRequest struct {
 	// pushedBy is the authenticated client that pushed an unsaved request. It
 	// is never stored.
 	pushedBy string
+	// redeemed marks an unsaved request that ParseAuthorizationRequest
+	// redeemed from a request_uri, so that Pushed cannot be set on others.
+	redeemed bool
 
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
