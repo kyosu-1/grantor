@@ -63,7 +63,7 @@ type AccessToken struct {
 	Issuer    string
 	ClientID  string
 	Subject   string    // empty when no end-user is involved
-	Audience  []string  // never empty: defaults to the client ID
+	Audience  []string  // the granted audience, or the client ID when none was granted
 	Scopes    []string
 	GrantType GrantType
 	AuthTime  time.Time
@@ -91,7 +91,7 @@ type Client struct {
 }
 ```
 
-Validation: `New` rejects custom formats named `opaque` or `jwt`, empty names and nil encoders, and an unknown `Config.AccessTokenFormat`. A client with an unknown format, a negative lifetime, or an access token signing algorithm the issuer has no key for (only checked when the client's format needs signing) is a server-side misconfiguration.
+Validation: `New` rejects custom formats named `opaque` or `jwt`, empty names and nil encoders, and an unknown `Config.AccessTokenFormat`. A client with an unknown format or a negative lifetime is a server-side misconfiguration. A signing algorithm the issuer has no key for fails when a token is signed (`SignFunc` returns an error), which becomes `server_error`.
 
 ### Grants, approvals and issuance
 
@@ -129,7 +129,7 @@ Claims: `iss`, `sub` (the end-user, or the client ID for grants without one), `a
 
 ### Introspection
 
-Active access tokens additionally return `aud` (string or array) and their `AccessTokenClaims`. Refresh tokens return `aud` too.
+Active access tokens additionally return `aud` (a string or an array) when they have a stored audience, and their `AccessTokenClaims`. Refresh tokens return `aud` the same way. Opaque tokens issued without an audience keep returning no `aud`.
 
 ### In-process validation
 
