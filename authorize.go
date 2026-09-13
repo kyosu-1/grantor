@@ -3,6 +3,7 @@ package grantor
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,6 +151,19 @@ func (p *Provider) authorizationTarget(ctx context.Context, iss *resolvedIssuer,
 	}
 
 	target := &authorizationTarget{mode: responseModeQuery, state: q.get("state")}
+	responseMode := q.get("response_mode")
+	if v := q.get("request"); v != "" {
+		// Request objects are rejected, but the rejection must reach the
+		// client the way it asked for, which it may have said only inside
+		// the request object.
+		objMode, objState := requestObjectResponseHints(v)
+		if responseMode == "" {
+			responseMode = objMode
+		}
+		if target.state == "" {
+			target.state = objState
+		}
+	}
 	switch redirectURI := q.get("redirect_uri"); {
 	case redirectURI != "":
 		if !client.matchRedirectURI(redirectURI) {
@@ -163,7 +177,7 @@ func (p *Provider) authorizationTarget(ctx context.Context, iss *resolvedIssuer,
 	default:
 		return nil, nil, errInvalidRequest("redirect_uri is required")
 	}
-	if mode := q.get("response_mode"); mode != "" && !q.isRepeated("response_mode") {
+	if mode := responseMode; mode != "" && !q.isRepeated("response_mode") {
 		switch mode {
 		case responseModeQuery, responseModeFragment:
 			target.mode = mode
@@ -309,6 +323,29 @@ func validateScopes(client *Client, scope string) ([]string, *Error) {
 		}
 	}
 	return scopes, nil
+}
+
+// requestObjectResponseHints reads response_mode and state from the payload of
+// an unsupported request object, without verifying it. The values only
+// decide how the request_not_supported error is delivered to the redirect
+// URI that was already validated, so they need not be trusted.
+func requestObjectResponseHints(requestObject string) (responseMode, state string) {
+	parts := strings.Split(requestObject, ".")
+	if len(parts) != 3 {
+		return "", ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", ""
+	}
+	var hints struct {
+		ResponseMode string `json:"response_mode"`
+		State        string `json:"state"`
+	}
+	if json.Unmarshal(payload, &hints) != nil {
+		return "", ""
+	}
+	return hints.ResponseMode, hints.State
 }
 
 // validScopeToken implements scope-token from RFC 6749 section 3.3.

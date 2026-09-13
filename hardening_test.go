@@ -2,6 +2,7 @@ package grantor_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/url"
@@ -255,5 +256,20 @@ func TestIssuerRequiresRS256Key(t *testing.T) {
 	})
 	if err == nil || errors.Is(err, grantor.ErrNotFound) {
 		t.Fatalf("New with only an EC key = %v, want an error", err)
+	}
+}
+
+func TestRejectedRequestObjectUsesItsResponseMode(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"response_mode":"form_post","state":"from-object"}`))
+	q := url.Values{
+		"response_type": {"code"}, "client_id": {confidentialClient}, "redirect_uri": {clientRedirect},
+		"scope": {"openid"}, "request": {"eyJhbGciOiJub25lIn0." + payload + "."},
+	}
+	rec := e.get(grantor.PathAuthorization, q)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, `value="request_not_supported"`) || !strings.Contains(body, `value="from-object"`) {
+		t.Fatalf("rejected request object = %d %s", rec.Code, body)
 	}
 }

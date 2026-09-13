@@ -29,6 +29,7 @@ echo "waiting for the provider and the conformance suite..."
 curl -sk --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null https://localhost:9443/.well-known/openid-configuration
 curl -sk --retry 60 --retry-connrefused --retry-all-errors --retry-delay 2 -o /dev/null https://localhost.emobix.co.uk:8443/api/runner/available
 
+mkdir -p "$work/results"
 cd "$suite/scripts"
 CONFORMANCE_SERVER=https://localhost.emobix.co.uk:8443/ \
 CONFORMANCE_SERVER_MTLS=https://localhost.emobix.co.uk:8444/ \
@@ -36,5 +37,6 @@ CONFORMANCE_DEV_MODE=1 \
   "$work/venv/bin/python" run-test-plan.py \
     --export-dir "$work/results" \
     --expected-skips-file "$here/expected-skips.json" \
-    "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]" \
-    "$here/basic-op.json"
+    "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]" "$here/basic-op.json" \
+    "oidcc-config-certification-test-plan" "$here/basic-op.json" \
+    "oidcc-formpost-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]" "$here/basic-op.json"
