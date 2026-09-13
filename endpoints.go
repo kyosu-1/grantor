@@ -20,6 +20,9 @@ type Endpoints struct {
 	Introspection string
 	Revocation    string
 	JWKS          string
+	// PushedAuthorization is only served when Config.PAR enables pushed
+	// authorization requests.
+	PushedAuthorization string
 }
 
 func (e *Endpoints) setDefaults() {
@@ -33,6 +36,7 @@ func (e *Endpoints) setDefaults() {
 		{&e.Introspection, PathIntrospection},
 		{&e.Revocation, PathRevocation},
 		{&e.JWKS, PathJWKS},
+		{&e.PushedAuthorization, PathPushedAuthorization},
 	} {
 		if *f.path == "" {
 			*f.path = f.def
@@ -42,7 +46,7 @@ func (e *Endpoints) setDefaults() {
 
 func (e *Endpoints) validate() error {
 	seen := map[string]bool{}
-	for _, path := range []string{e.Authorization, e.Token, e.UserInfo, e.Introspection, e.Revocation, e.JWKS} {
+	for _, path := range []string{e.Authorization, e.Token, e.UserInfo, e.Introspection, e.Revocation, e.JWKS, e.PushedAuthorization} {
 		if !strings.HasPrefix(path, "/") || (&url.URL{Path: path}).EscapedPath() != path {
 			return fmt.Errorf("endpoint path %q must start with / and contain only path characters", path)
 		}

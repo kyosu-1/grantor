@@ -101,7 +101,7 @@ func (p *Provider) parseAuthorization(r *http.Request, iss *resolvedIssuer) (*Au
 	if perr != nil {
 		return nil, &authorizationError{err: perr, iss: iss}
 	}
-	req, perr := p.parseAuthorizationRequest(iss, client, q, target)
+	req, perr := p.parseAuthorizationRequest(iss, client, q, target, false)
 	if perr != nil {
 		return nil, &authorizationError{err: perr, iss: iss, target: target}
 	}
@@ -275,7 +275,7 @@ func (p *Provider) authorizationTarget(ctx context.Context, iss *resolvedIssuer,
 // parseAuthorizationRequest validates the parameters of an authorization
 // request whose client and redirect URI are already verified. Errors are
 // redirected to the client.
-func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client, q params, target *authorizationTarget) (*AuthorizationRequest, *Error) {
+func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client, q params, target *authorizationTarget, pushed bool) (*AuthorizationRequest, *Error) {
 	if len(q.repeated) > 0 {
 		return nil, errInvalidRequest("parameters must not be repeated")
 	}
@@ -289,6 +289,9 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 	}
 	if q.has("request_uri") {
 		return nil, newError(CodeRequestURINotSupported, "request_uri is not supported")
+	}
+	if !pushed && p.parRequired(client) {
+		return nil, errInvalidRequest("the client must use pushed authorization requests")
 	}
 	if mode := q.get("response_mode"); mode != "" && mode != target.mode {
 		return nil, errInvalidRequest("the response_mode is not supported for this redirect_uri")
@@ -322,6 +325,7 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 		ClaimsLocales:        splitSpaces(q.get("claims_locales")),
 		ACRValues:            splitSpaces(q.get("acr_values")),
 		Audience:             slices.Clone(client.Audience),
+		Pushed:               pushed,
 		CreatedAt:            now,
 		ExpiresAt:            now.Add(p.cfg.Lifetimes.AuthorizationRequest),
 	}

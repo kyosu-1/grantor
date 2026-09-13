@@ -83,6 +83,7 @@ func fullAuthorizationRequest() *grantor.AuthorizationRequest {
 			IDToken:  map[string]*grantor.ClaimRequest{"acr": {Essential: true, Values: []any{"urn:acr:1"}}},
 		},
 		Audience:    []string{"https://api.example.com"},
+		Pushed:      true,
 		Extra:       map[string]string{"tenant": "acme"},
 		BindingHash: "binding-hash",
 		CreatedAt:   n,
@@ -118,15 +119,20 @@ func fullToken(typ grantor.TokenKind, grantID string) *grantor.Token {
 
 func testAuthorizationRequestRoundTrip(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
-	want := fullAuthorizationRequest()
-	if err := s.CreateAuthorizationRequest(ctx, want); err != nil {
-		t.Fatalf("CreateAuthorizationRequest: %v", err)
+	pushed := fullAuthorizationRequest()
+	// Pushed authorization requests use IDs with a prefix, up to 64 bytes.
+	pushed.ID = "par:" + randomID() + randomID()
+	pushed.ID += strings.Repeat("x", 64-len(pushed.ID))
+	for _, want := range []*grantor.AuthorizationRequest{fullAuthorizationRequest(), pushed} {
+		if err := s.CreateAuthorizationRequest(ctx, want); err != nil {
+			t.Fatalf("CreateAuthorizationRequest(%q): %v", want.ID, err)
+		}
+		got, err := s.AuthorizationRequest(ctx, want.ID)
+		if err != nil {
+			t.Fatalf("AuthorizationRequest(%q): %v", want.ID, err)
+		}
+		assertEqual(t, got, want)
 	}
-	got, err := s.AuthorizationRequest(ctx, want.ID)
-	if err != nil {
-		t.Fatalf("AuthorizationRequest: %v", err)
-	}
-	assertEqual(t, got, want)
 }
 
 func testAuthorizationRequestConflict(t *testing.T, s grantor.Storage) {

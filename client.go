@@ -108,6 +108,11 @@ type Client struct {
 	// PKCERequired, and public clients always require PKCE.
 	PKCE PKCEPolicy
 
+	// RequirePushedAuthorizationRequests accepts authorization requests of
+	// the client only through the pushed authorization request endpoint
+	// (RFC 9126). Config.PAR must enable pushed authorization requests.
+	RequirePushedAuthorizationRequests bool
+
 	// IDTokenSigningAlg is the JWS algorithm for ID tokens issued to this
 	// client (id_token_signed_response_alg). It defaults to RS256.
 	IDTokenSigningAlg string

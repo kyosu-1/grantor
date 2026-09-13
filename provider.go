@@ -20,6 +20,7 @@ const (
 	PathRevocation          = "/revoke"
 	PathJWKS                = "/jwks"
 	PathOpenIDConfiguration = "/.well-known/openid-configuration"
+	PathPushedAuthorization = "/par"
 )
 
 // PathAuthorizationServerMetadata is the RFC 8414 metadata path. For issuers
@@ -50,6 +51,9 @@ type Lifetimes struct {
 	AccessToken          time.Duration // default 1 hour
 	RefreshToken         time.Duration // default 30 days
 	IDToken              time.Duration // default 1 hour
+	// PushedAuthorizationRequest is how long a request_uri from the pushed
+	// authorization request endpoint stays valid; default 60 seconds.
+	PushedAuthorizationRequest time.Duration
 }
 
 // InteractionFunc handles a validated authorization request that needs the
@@ -107,6 +111,10 @@ type Config struct {
 
 	// Endpoints configures the paths of the protocol endpoints.
 	Endpoints Endpoints
+
+	// PAR enables pushed authorization requests (RFC 9126). The zero value
+	// disables them.
+	PAR PARPolicy
 
 	// AccessTokenFormat is the format of access tokens for clients that do not
 	// set Client.AccessTokenFormat. It defaults to AccessTokenFormatOpaque.
@@ -206,9 +214,15 @@ func New(cfg Config) (*Provider, error) {
 	setDefault(&cfg.Lifetimes.AccessToken, time.Hour)
 	setDefault(&cfg.Lifetimes.RefreshToken, 30*24*time.Hour)
 	setDefault(&cfg.Lifetimes.IDToken, time.Hour)
-	for _, d := range []time.Duration{cfg.Lifetimes.AccessToken, cfg.Lifetimes.RefreshToken, cfg.Lifetimes.IDToken} {
+	setDefault(&cfg.Lifetimes.PushedAuthorizationRequest, time.Minute)
+	switch cfg.PAR {
+	case PARDisabled, PARAllowed, PARRequired:
+	default:
+		return nil, fmt.Errorf("grantor: unknown Config.PAR %q", cfg.PAR)
+	}
+	for _, d := range []time.Duration{cfg.Lifetimes.AccessToken, cfg.Lifetimes.RefreshToken, cfg.Lifetimes.IDToken, cfg.Lifetimes.PushedAuthorizationRequest} {
 		if !validLifetime(d) {
-			return nil, errors.New("grantor: Config.Lifetimes of tokens must be at least a second")
+			return nil, errors.New("grantor: Config.Lifetimes of tokens and pushed authorization requests must be at least a second")
 		}
 	}
 	if cfg.Logger == nil {
@@ -327,6 +341,8 @@ func (p *Provider) route(w http.ResponseWriter, r *http.Request, iss *resolvedIs
 		p.serveRevocation(w, r, iss)
 	case e.JWKS:
 		p.serveJWKS(w, r, iss)
+	case e.PushedAuthorization:
+		p.servePushedAuthorization(w, r, iss)
 	case PathOpenIDConfiguration:
 		p.serveDiscovery(w, r, iss)
 	default:
@@ -351,6 +367,9 @@ func (p *Provider) client(ctx context.Context, iss *resolvedIssuer, id string) (
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
+	}
+	if c.RequirePushedAuthorizationRequests && p.cfg.PAR == PARDisabled {
+		return nil, fmt.Errorf("client %q requires pushed authorization requests, which Config.PAR does not enable", c.ID)
 	}
 	if c.AccessTokenFormat != "" && !p.knownFormat(c.AccessTokenFormat) {
 		return nil, fmt.Errorf("client %q has the unknown access token format %q", c.ID, c.AccessTokenFormat)

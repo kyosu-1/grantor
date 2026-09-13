@@ -37,7 +37,8 @@ type ClientStore interface {
 // Config field.
 type Storage interface {
 	// CreateAuthorizationRequest saves a pending authorization request.
-	// It returns ErrConflict if a request with the same ID exists.
+	// It returns ErrConflict if a request with the same ID exists. IDs are
+	// ASCII strings of at most 64 bytes.
 	CreateAuthorizationRequest(ctx context.Context, req *AuthorizationRequest) error
 
 	// AuthorizationRequest returns the pending authorization request with the

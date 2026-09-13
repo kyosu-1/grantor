@@ -53,6 +53,10 @@ type AuthorizationRequest struct {
 	// Client.Audience; see [Approval.Audience].
 	Audience []string `json:"audience,omitempty"`
 
+	// Pushed reports whether the request was sent to the pushed authorization
+	// request endpoint (RFC 9126).
+	Pushed bool `json:"pushed,omitempty"`
+
 	// Extra holds the non-empty request parameters that grantor does not
 	// process, such as extension parameters.
 	Extra map[string]string `json:"extra,omitempty"`
@@ -64,6 +68,9 @@ type AuthorizationRequest struct {
 	// It is never stored, so a saved request with its ID cleared cannot be
 	// passed off as unsaved.
 	parsed bool
+	// pushedBy is the authenticated client that pushed an unsaved request. It
+	// is never stored.
+	pushedBy string
 
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`

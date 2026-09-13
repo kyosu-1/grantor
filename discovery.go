@@ -35,6 +35,8 @@ type metadata struct {
 	RequestURIParameterSupported               bool     `json:"request_uri_parameter_supported"`
 	PromptValuesSupported                      []string `json:"prompt_values_supported"`
 	AuthorizationResponseIssParameterSupported bool     `json:"authorization_response_iss_parameter_supported"`
+	PushedAuthorizationRequestEndpoint         string   `json:"pushed_authorization_request_endpoint,omitempty"`
+	RequirePushedAuthorizationRequests         bool     `json:"require_pushed_authorization_requests,omitempty"`
 }
 
 func (p *Provider) serveDiscovery(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer) {
@@ -73,6 +75,10 @@ func (p *Provider) serveDiscovery(w http.ResponseWriter, r *http.Request, iss *r
 		RequestURIParameterSupported:               false,
 		PromptValuesSupported:                      []string{"none", "login", "consent", "select_account"},
 		AuthorizationResponseIssParameterSupported: true,
+	}
+	if p.cfg.PAR != PARDisabled {
+		m.PushedAuthorizationRequestEndpoint = iss.endpoint(p.cfg.Endpoints.PushedAuthorization)
+		m.RequirePushedAuthorizationRequests = p.cfg.PAR == PARRequired
 	}
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "public, max-age=300")
