@@ -383,8 +383,7 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 }
 
 // validateScopes checks the scope of a client credentials request.
-func validateScopes(client *Client, scope string) ([]string, *Error) {
-	scopes := splitSpaces(scope)
+func validateScopes(client *Client, scopes []string) ([]string, *Error) {
 	for _, s := range scopes {
 		if !validScopeToken(s) {
 			return nil, newError(CodeInvalidScope, "scope contains invalid characters")

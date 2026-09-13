@@ -1,11 +1,13 @@
 package grantor_test
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kyosu-1/grantor"
@@ -245,5 +247,85 @@ func TestUnsavedRequestIsRevalidated(t *testing.T) {
 	// The unmodified request is accepted.
 	if err := e.p.Approve(httptest.NewRecorder(), httpGet(testIssuer+"/authorize"), parse(), approval); err != nil {
 		t.Fatalf("Approve: %v", err)
+	}
+}
+
+// tokenHandler is a token endpoint written with the building blocks.
+func (e *env) tokenHandler(adjust func(*grantor.TokenRequest)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := e.p.ParseTokenRequest(r)
+		if err != nil {
+			e.p.WriteTokenError(w, r, err)
+			return
+		}
+		adjust(req)
+		resp, err := e.p.Exchange(r.Context(), req)
+		if err != nil {
+			e.p.WriteTokenError(w, r, err)
+			return
+		}
+		e.p.WriteTokenResponse(w, resp)
+	})
+}
+
+func TestCustomTokenHandler(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	e.handler = e.tokenHandler(func(req *grantor.TokenRequest) {
+		if _, ok := req.Form["client_secret"]; ok {
+			t.Error("Form exposes client_secret")
+		}
+		// Policy: the api scope is never granted through this endpoint.
+		if req.Scopes != nil {
+			req.Scopes = slices.DeleteFunc(req.Scopes, func(s string) bool { return s == "api" })
+		}
+	})
+	status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api openid"}}, nil)
+	expectError(t, status, body, http.StatusUnauthorized, "invalid_client")
+	status, body = e.tokenRequest(url.Values{
+		"grant_type": {"client_credentials"}, "scope": {"api openid"},
+		"client_id": {serviceClient}, "client_secret": {confidentialSecret},
+	}, nil)
+	expectError(t, status, body, http.StatusBadRequest, "invalid_scope") // openid is still rejected
+	status, body = e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic(serviceClient, confidentialSecret))
+	if status != http.StatusOK || body["scope"] != nil {
+		t.Fatalf("narrowed client credentials = %d %v", status, body)
+	}
+
+	e.handler = e.p
+	code := e.login(authParams(confidentialClient, "openid profile", pkcePair{}), nil)
+	e.handler = e.tokenHandler(func(req *grantor.TokenRequest) { req.Scopes = []string{"openid"} })
+	status, body = e.exchangeCode(confidentialClient, code, "", basic(confidentialClient, confidentialSecret))
+	if status != http.StatusOK || body["scope"] != "openid" {
+		t.Fatalf("narrowed code exchange = %d %v", status, body)
+	}
+
+	e.handler = e.p
+	code = e.login(authParams(confidentialClient, "openid", pkcePair{}), nil)
+	e.handler = e.tokenHandler(func(req *grantor.TokenRequest) { req.Scopes = []string{"openid", "profile"} })
+	status, body = e.exchangeCode(confidentialClient, code, "", basic(confidentialClient, confidentialSecret))
+	expectError(t, status, body, http.StatusBadRequest, "invalid_scope")
+}
+
+func TestExchangeRejectsForeignTokenRequests(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	if _, err := e.p.Exchange(context.Background(), &grantor.TokenRequest{GrantType: grantor.GrantTypeClientCredentials}); err == nil {
+		t.Fatal("Exchange accepted a TokenRequest that was not parsed")
+	}
+	r := httptest.NewRequest(http.MethodPost, testIssuer+"/token", strings.NewReader("grant_type=client_credentials&scope=api"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.SetBasicAuth(serviceClient, confidentialSecret)
+	req, err := e.p.ParseTokenRequest(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := e.store.Client(context.Background(), testIssuer, resourceServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Client = other
+	if _, err := e.p.Exchange(context.Background(), req); err == nil {
+		t.Fatal("Exchange accepted a replaced client")
 	}
 }

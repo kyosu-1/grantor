@@ -12,21 +12,21 @@ func (p *Provider) serveRevocation(w http.ResponseWriter, r *http.Request, iss *
 	}
 	q, perr := parseForm(r)
 	if perr != nil {
-		p.writeTokenError(w, r, perr)
+		p.WriteTokenError(w, r, perr)
 		return
 	}
 	if len(q.repeated) > 0 {
-		p.writeTokenError(w, r, errInvalidRequest("parameters must not be repeated"))
+		p.WriteTokenError(w, r, errInvalidRequest("parameters must not be repeated"))
 		return
 	}
 	client, perr := p.authenticateClient(r, iss, q)
 	if perr != nil {
-		p.writeTokenError(w, r, perr)
+		p.WriteTokenError(w, r, perr)
 		return
 	}
 	token := q.get("token")
 	if token == "" {
-		p.writeTokenError(w, r, errInvalidRequest("token is required"))
+		p.WriteTokenError(w, r, errInvalidRequest("token is required"))
 		return
 	}
 
@@ -36,12 +36,12 @@ func (p *Provider) serveRevocation(w http.ResponseWriter, r *http.Request, iss *
 	case errors.Is(err, ErrNotFound):
 		// Invalid tokens do not cause an error (RFC 7009 section 2.2).
 	case err != nil:
-		p.writeTokenError(w, r, errServer(err))
+		p.WriteTokenError(w, r, errServer(err))
 		return
 	case t.Issuer != iss.url || t.Type == TokenTypeAuthorizationCode:
 		// Treated like an unknown token.
 	case t.ClientID != client.ID:
-		p.writeTokenError(w, r, newError(CodeUnauthorizedClient, "the token was not issued to this client"))
+		p.WriteTokenError(w, r, newError(CodeUnauthorizedClient, "the token was not issued to this client"))
 		return
 	case t.Type == TokenTypeRefreshToken:
 		// Revoking a refresh token also invalidates the access tokens of the
@@ -51,7 +51,7 @@ func (p *Provider) serveRevocation(w http.ResponseWriter, r *http.Request, iss *
 		err = p.cfg.Storage.RevokeToken(r.Context(), hash)
 	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		p.writeTokenError(w, r, errServer(err))
+		p.WriteTokenError(w, r, errServer(err))
 		return
 	}
 	noStore(w)

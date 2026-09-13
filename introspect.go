@@ -13,25 +13,25 @@ func (p *Provider) serveIntrospection(w http.ResponseWriter, r *http.Request, is
 	}
 	q, perr := parseForm(r)
 	if perr != nil {
-		p.writeTokenError(w, r, perr)
+		p.WriteTokenError(w, r, perr)
 		return
 	}
 	if len(q.repeated) > 0 {
-		p.writeTokenError(w, r, errInvalidRequest("parameters must not be repeated"))
+		p.WriteTokenError(w, r, errInvalidRequest("parameters must not be repeated"))
 		return
 	}
 	client, perr := p.authenticateClient(r, iss, q)
 	if perr != nil {
-		p.writeTokenError(w, r, perr)
+		p.WriteTokenError(w, r, perr)
 		return
 	}
 	if client.isPublic() {
-		p.writeTokenError(w, r, errInvalidClient("public clients may not introspect tokens"))
+		p.WriteTokenError(w, r, errInvalidClient("public clients may not introspect tokens"))
 		return
 	}
 	token := q.get("token")
 	if token == "" {
-		p.writeTokenError(w, r, errInvalidRequest("token is required"))
+		p.WriteTokenError(w, r, errInvalidRequest("token is required"))
 		return
 	}
 
@@ -43,7 +43,7 @@ func (p *Provider) serveIntrospection(w http.ResponseWriter, r *http.Request, is
 		return
 	}
 	if err != nil {
-		p.writeTokenError(w, r, errServer(err))
+		p.WriteTokenError(w, r, errServer(err))
 		return
 	}
 	active := t.Issuer == iss.url &&
