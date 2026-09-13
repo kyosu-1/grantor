@@ -476,6 +476,10 @@ func equalValues(a, b reflect.Value) bool {
 		return equalValues(a.Elem(), b.Elem())
 	case reflect.Struct:
 		for i := range a.NumField() {
+			// Unexported fields are never stored.
+			if !a.Type().Field(i).IsExported() {
+				continue
+			}
 			if !equalValues(a.Field(i), b.Field(i)) {
 				return false
 			}

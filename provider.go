@@ -301,12 +301,21 @@ func (p *Provider) client(ctx context.Context, iss *resolvedIssuer, id string) (
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
+	for _, gt := range c.grantTypes() {
+		switch gt {
+		case GrantTypeAuthorizationCode, GrantTypeRefreshToken, GrantTypeClientCredentials:
+		default:
+			if _, ok := p.cfg.Grants[gt]; !ok {
+				return nil, fmt.Errorf("client %q has grant type %q, which is not built in or in Config.Grants", c.ID, gt)
+			}
+		}
+	}
 	return c, nil
 }
 
 func (p *Provider) logError(ctx context.Context, msg string, err error) {
 	var e *Error
-	if errors.As(err, &e) && e.cause != nil {
+	if errors.As(err, &e) && e != nil && e.cause != nil {
 		err = e.cause
 	}
 	p.cfg.Logger.ErrorContext(ctx, "grantor: "+msg, "error", err)

@@ -10,7 +10,7 @@ func (p *Provider) serveRevocation(w http.ResponseWriter, r *http.Request, iss *
 	if !allowMethods(w, r, http.MethodPost) {
 		return
 	}
-	q, perr := parseForm(r)
+	q, perr := parseForm(w, r)
 	if perr != nil {
 		p.WriteTokenError(w, r, perr)
 		return

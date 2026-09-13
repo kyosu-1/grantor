@@ -80,18 +80,22 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 			provider.WriteAuthorizationError(w, r, err)
 			return
 		}
+		// NEVER DO THIS IN A REAL PROVIDER: login_hint is chosen by the client,
+		// so trusting it lets anyone sign in as anyone. A real application
+		// authenticates the end-user here, saving the request with
+		// SaveAuthorizationRequest when it needs a login page.
 		user := req.LoginHint
 		if user == "" || disabledUsers[user] {
 			if err := provider.Deny(w, r, req, grantor.ErrAccessDenied); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				logger.ErrorContext(r.Context(), "deny", "error", err)
+				http.Error(w, "unable to complete the request", http.StatusInternalServerError)
 			}
 			return
 		}
-		// A real application authenticates the end-user here, saving the
-		// request with SaveAuthorizationRequest if it needs a login page.
 		err = provider.Approve(w, r, req, grantor.Approval{Subject: user, Scopes: req.Scopes, AuthTime: time.Now()})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			logger.ErrorContext(r.Context(), "approve", "error", err)
+			http.Error(w, "unable to complete the request", http.StatusInternalServerError)
 		}
 	})
 	mux.HandleFunc("POST /oauth2/token", provider.ServeToken)

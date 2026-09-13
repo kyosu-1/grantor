@@ -86,10 +86,11 @@ func (p *Provider) Deny(w http.ResponseWriter, r *http.Request, req *Authorizati
 - `AuthorizationRequest` is unchanged: it loads a saved request and checks issuer, expiry and binding.
 - `Approve` and `Deny`:
   1. For a saved request (`ID != ""`): load the stored copy, check issuer, expiry and binding (cookie on `r`, or the `Set-Cookie` header on `w`), compare protocol fields with `req` (D7), and delete the stored copy atomically. The stored copy is used from here on.
-  2. Re-validate the request (D6): client exists; redirect URI registered; `response_type` is `code`; response mode valid for the redirect URI; scopes are a subset of the client's scopes; the PKCE policy is satisfied; the code challenge is well formed; issuer matches the request.
+  2. Re-validate the request (D6). For `Approve`: client exists; redirect URI registered; `response_type` is `code`; response mode valid for the redirect URI; scopes are a subset of the client's scopes; the PKCE policy is satisfied; the code challenge is well formed; issuer matches the request. `Deny` issues nothing and only checks what it needs to deliver the error safely: issuer, client, redirect URI and response mode, so it still works after the client registration changed.
+  - An unsaved request (`ID == ""`) must carry an unexported marker set by `ParseAuthorizationRequest` and cleared by `SaveAuthorizationRequest`; storage never persists it. A saved request with its ID cleared, or a struct literal, is rejected. An unsaved request should be completed within the HTTP request that parsed it.
   3. `Approve` then validates the approval (unchanged rules) and issues the code; `Deny` sends the error.
 - Compared protocol fields (D7): `Issuer`, `ClientID`, `RedirectURI`, `RedirectURIInRequest`, `ResponseType`, `ResponseMode`, `State`, `Scopes`, `CodeChallenge`, `CodeChallengeMethod`, `Nonce`, `Prompt`, `MaxAge`, `RequestedSubject`. Edits to a request must be made before saving it.
-- `AuthorizationRequest.Extra map[string]string` holds non-empty parameters grantor does not process.
+- `AuthorizationRequest.Extra map[string]string` holds non-empty parameters grantor does not process: at most 32, each at most 1024 bytes, never credential parameters such as `client_secret`.
 - `Deny` accepts any `reason.Code` made of the characters RFC 6749 allows for error codes; `reason.Description` and `reason.URI` are sent as `error_description` and `error_uri`.
 
 Convenience layer: `ServeAuthorization` = parse → on error `WriteAuthorizationError` → `SaveAuthorizationRequest` → `Config.Interact`. `Config.Interact` stays required for `ServeAuthorization`/`ServeHTTP`, but `New` no longer requires it when only the low-level layer is used; `ServeAuthorization` without `Interact` responds with `server_error`.
@@ -134,10 +135,11 @@ func (p *Provider) WriteTokenError(w http.ResponseWriter, r *http.Request, err e
 ```
 
 - `ParseTokenRequest`: POST form parsing, repeated-parameter check, client authentication, `grant_type` required. The scope parameter is parsed into `Scopes`. `client_secret` and `client_assertion` are removed from `Form`.
-- `Exchange`: rejects a `TokenRequest` not produced by `ParseTokenRequest` or whose `Client.ID` no longer matches the authenticated client; dispatches to the built-in grants or `Config.Grants`; `unsupported_grant_type` when no handler exists, `unauthorized_client` when the client may not use the grant. For built-in grants, `Scopes` replaces the scope parameter: nil means "not sent" and grants everything the grant allows; otherwise it must be a subset of what the grant allows (`invalid_scope`) and becomes the access token scope. This applies to the authorization code grant too, so an application can narrow a code exchange. The refresh token keeps the grant's full scope, as RFC 6749 section 6 requires.
+- `Exchange`: rejects a `TokenRequest` not produced by `ParseTokenRequest` or whose `Client.ID` no longer matches the authenticated client; dispatches to the built-in grants or `Config.Grants`; `unsupported_grant_type` when no handler exists, `unauthorized_client` when the client may not use the grant. For built-in grants, `Scopes` replaces the scope parameter: nil means "not sent" and grants everything the grant allows; otherwise it must be a subset of what the grant allows (`invalid_scope`) and becomes the access token scope. The authorization code grant has no scope parameter, so `ParseTokenRequest` leaves `Scopes` nil for it and `ServeToken` behaves as before; an application may still set it to narrow a code exchange. The refresh token keeps the grant's full scope, as RFC 6749 section 6 requires, and a code exchange for an OpenID Connect request always returns an ID token.
+- `Exchange` and `IssueTokens` work on a private copy of the authenticated client, so editing `TokenRequest.Client` has no effect. `IssueTokens` only serves custom grant types the client is registered for.
 - `IssueTokens`: for custom grants. Validates the grant (subject syntax, scopes ⊆ client scopes, refresh token allowed, no `openid` without a subject), creates a new grant ID, runs `BeforeIssue`, issues the access token, optional refresh token and, when `openid` is granted with a subject, an ID token.
 - Built-in grants call the same internal issuance path, so `BeforeIssue` runs for all grants.
-- Custom grant types are declared per client in `Client.GrantTypes`; `Client` validation no longer rejects unknown grant types. `Config.Grants` must not redefine a built-in grant type, and its keys are added to `grant_types_supported`.
+- Custom grant types are declared per client in `Client.GrantTypes`; a client listing a grant type that is neither built in nor in `Config.Grants` is a server-side misconfiguration. `Config.Grants` must not redefine a built-in grant type, and its keys are added to `grant_types_supported`.
 
 ### Issuance hook
 
@@ -154,7 +156,7 @@ type Issuance struct {
 }
 ```
 
-`BeforeIssue` runs after all protocol checks and before any token is created. Returning an `*Error` sends it to the client; any other error becomes `server_error`. Afterwards grantor verifies that `Scopes` is a subset of the original scopes and that `RefreshToken` was not switched on; violations are server errors. For a code exchange the authorization code is consumed before the hook runs, so a rejected exchange cannot be retried with the same code; for a refresh the same holds for the refresh token.
+`BeforeIssue` runs after all protocol checks and before any token is created. Returning an `*Error` sends it to the client; any other error, including a nil `*Error` wrapped in an `error`, becomes `server_error`. Afterwards grantor verifies that `Scopes` is a subset of the original scopes and that `RefreshToken` was not switched on; violations are server errors. For code exchanges and refreshes the hook runs before the code or refresh token is consumed, so a failing hook does not turn a retry into token reuse; the hook may therefore see an issuance that then fails because the token was used concurrently.
 
 ### Errors
 
@@ -163,7 +165,7 @@ type Error struct {
 	Code        string
 	Description string
 	URI         string // sent as error_uri
-	StatusCode  int    // HTTP status for token-style responses; 0 selects the default for Code
+	StatusCode  int    // HTTP status for JSON error responses; 0 or a value outside 400-599 selects the default for Code
 }
 ```
 

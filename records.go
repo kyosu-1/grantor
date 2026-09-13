@@ -56,6 +56,11 @@ type AuthorizationRequest struct {
 	// BindingHash binds the request to the user agent that started it.
 	BindingHash string `json:"binding_hash,omitempty"`
 
+	// parsed marks an unsaved request returned by ParseAuthorizationRequest.
+	// It is never stored, so a saved request with its ID cleared cannot be
+	// passed off as unsaved.
+	parsed bool
+
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }

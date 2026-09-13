@@ -95,7 +95,8 @@ mux.HandleFunc("/oauth2/authorize", func(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	req.Scopes = policy.Allowed(req.ClientID, req.Scopes) // narrow by policy
-	if user, ok := session(r); ok && !req.NeedsAuthentication(user.AuthTime) {
+	// Signed in, and no consent screen needed (also handle prompt=none and prompt=consent).
+	if user, ok := session(r); ok && !req.NeedsAuthentication(user.AuthTime) && hasConsent(user, req) {
 		approval := grantor.Approval{Subject: user.ID, Scopes: req.Scopes, AuthTime: user.AuthTime}
 		if err := provider.Approve(w, r, req, approval); err != nil {
 			http.Error(w, "cannot complete sign-in", http.StatusInternalServerError)

@@ -44,6 +44,19 @@ var authorizationParams = map[string]bool{
 	"request": true, "request_uri": true,
 }
 
+// Limits for AuthorizationRequest.Extra, which is stored with the request.
+const (
+	maxExtraParams = 32
+	maxExtraLength = 1024
+)
+
+// excludedExtraParams are never kept in AuthorizationRequest.Extra, so that
+// credentials a misbehaving client puts in the URL are not stored.
+var excludedExtraParams = map[string]bool{
+	"client_secret": true, "client_assertion": true, "client_assertion_type": true,
+	"code_verifier": true, "password": true, "access_token": true, "refresh_token": true,
+}
+
 // authorizationError is an error from ParseAuthorizationRequest. A non-nil
 // target means the error may be redirected to the client.
 type authorizationError struct {
@@ -56,10 +69,13 @@ func (e *authorizationError) Error() string { return e.err.Error() }
 func (e *authorizationError) Unwrap() error { return e.err }
 
 // ParseAuthorizationRequest validates an authorization request and returns
-// it unsaved. Complete it right away with Approve or Deny, or save it with
-// SaveAuthorizationRequest to complete it later, for example after a login
-// page. Write errors with WriteAuthorizationError, which redirects them to
-// the client when that is safe.
+// it unsaved. Complete it with Approve or Deny within the same HTTP request,
+// or save it with SaveAuthorizationRequest to complete it later, for example
+// after a login page. Write errors with WriteAuthorizationError, which
+// redirects them to the client when that is safe.
+//
+// AuthorizationRequest.Extra keeps up to 32 unprocessed parameters of up to
+// 1024 bytes each; credential parameters such as client_secret are dropped.
 func (p *Provider) ParseAuthorizationRequest(r *http.Request) (*AuthorizationRequest, error) {
 	iss, err := p.issuerFor(r)
 	if err != nil {
@@ -75,7 +91,7 @@ func (p *Provider) parseAuthorization(r *http.Request, iss *resolvedIssuer) (*Au
 		q = newParams(r.URL.Query())
 	case http.MethodPost:
 		var perr *Error
-		if q, perr = parseForm(r); perr != nil {
+		if q, perr = parseForm(nil, r); perr != nil {
 			return nil, &authorizationError{err: perr, iss: iss}
 		}
 	default:
@@ -133,6 +149,7 @@ func (p *Provider) SaveAuthorizationRequest(w http.ResponseWriter, r *http.Reque
 		return err
 	}
 	saved := *req
+	saved.parsed = false
 	saved.ID = randomToken()
 	saved.Claims = p.claimsForClient(client, saved.Claims)
 	var binding string
@@ -290,6 +307,7 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 
 	now := p.now()
 	req := &AuthorizationRequest{
+		parsed:               true,
 		Issuer:               iss.url,
 		ClientID:             client.ID,
 		RedirectURI:          target.redirectURI,
@@ -308,12 +326,13 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 	}
 
 	for name, v := range q.values {
-		if !authorizationParams[name] {
-			if req.Extra == nil {
-				req.Extra = map[string]string{}
-			}
-			req.Extra[name] = v
+		if authorizationParams[name] || excludedExtraParams[name] || len(v) > maxExtraLength || len(req.Extra) >= maxExtraParams {
+			continue
 		}
+		if req.Extra == nil {
+			req.Extra = map[string]string{}
+		}
+		req.Extra[name] = v
 	}
 
 	// OpenID Connect Core section 3.1.2.1: scope values that are not

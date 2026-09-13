@@ -119,7 +119,7 @@ func bindingFromResponse(w http.ResponseWriter, name string) string {
 // the approval is not acceptable, for example because the end-user must
 // authenticate again; see [AuthorizationRequest.NeedsAuthentication].
 func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest, a Approval) error {
-	iss, req, err := p.completable(w, r, req)
+	iss, req, err := p.completable(w, r, req, true)
 	if err != nil {
 		return err
 	}
@@ -181,7 +181,7 @@ func (p *Provider) Deny(w http.ResponseWriter, r *http.Request, req *Authorizati
 	if !validErrorCode(reason.Code) {
 		return fmt.Errorf("grantor: %q is not a valid error code", reason.Code)
 	}
-	iss, req, err := p.completable(w, r, req)
+	iss, req, err := p.completable(w, r, req, false)
 	if err != nil {
 		return err
 	}
@@ -197,8 +197,9 @@ func (p *Provider) Deny(w http.ResponseWriter, r *http.Request, req *Authorizati
 
 // completable returns the request to complete: the stored copy of a saved
 // request, or a copy of an unsaved one. Either way it is validated again
-// against the client registration.
-func (p *Provider) completable(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest) (*resolvedIssuer, *AuthorizationRequest, error) {
+// against the client registration: fully for an approval, and for a denial
+// only as far as needed to deliver the error safely.
+func (p *Provider) completable(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest, approval bool) (*resolvedIssuer, *AuthorizationRequest, error) {
 	if req == nil {
 		return nil, nil, ErrAuthorizationRequestNotFound
 	}
@@ -217,6 +218,9 @@ func (p *Provider) completable(w http.ResponseWriter, r *http.Request, req *Auth
 		}
 		current = stored
 	} else {
+		if !req.parsed {
+			return nil, nil, errors.New("grantor: an unsaved authorization request must come from ParseAuthorizationRequest")
+		}
 		copied := *req
 		current = &copied
 		if !p.now().Before(current.ExpiresAt) {
@@ -227,40 +231,57 @@ func (p *Provider) completable(w http.ResponseWriter, r *http.Request, req *Auth
 	if err != nil {
 		return nil, nil, fmt.Errorf("grantor: look up client: %w", err)
 	}
-	if err := p.checkRequest(iss, client, current); err != nil {
+	check := p.checkRequest
+	if !approval {
+		check = p.checkDelivery
+	}
+	if err := check(iss, client, current); err != nil {
 		return nil, nil, err
 	}
 	current.Claims = p.claimsForClient(client, current.Claims)
 	return iss, current, nil
 }
 
-// checkRequest validates a request against the client registration and the
-// provider policy, so that changes made by the application cannot weaken
-// security.
-func (p *Provider) checkRequest(iss *resolvedIssuer, client *Client, req *AuthorizationRequest) error {
-	invalid := func(reason string) error {
-		return errors.New("grantor: invalid authorization request: " + reason)
-	}
+func invalidRequest(reason string) error {
+	return errors.New("grantor: invalid authorization request: " + reason)
+}
+
+// checkDelivery validates what is needed to send an authorization response
+// safely: the issuer, a registered redirect URI and a usable response mode.
+func (p *Provider) checkDelivery(iss *resolvedIssuer, client *Client, req *AuthorizationRequest) error {
 	switch {
 	case req.Issuer != iss.url:
-		return invalid("it belongs to another issuer")
+		return invalidRequest("it belongs to another issuer")
 	case req.ClientID != client.ID:
-		return invalid("the client does not match")
-	case !client.allowsGrant(GrantTypeAuthorizationCode):
-		return invalid("the client may not use the authorization code grant")
-	case req.ResponseType != "code":
-		return invalid("response_type must be code")
+		return invalidRequest("the client does not match")
 	case !client.matchRedirectURI(req.RedirectURI):
-		return invalid("the redirect URI is not registered for the client")
+		return invalidRequest("the redirect URI is not registered for the client")
 	}
 	switch req.ResponseMode {
 	case responseModeQuery, responseModeFragment:
 	case responseModeFormPost:
 		if !isHTTPURL(req.RedirectURI) {
-			return invalid("form_post requires an http or https redirect URI")
+			return invalidRequest("form_post requires an http or https redirect URI")
 		}
 	default:
-		return invalid("unsupported response mode")
+		return invalidRequest("unsupported response mode")
+	}
+	return nil
+}
+
+// checkRequest validates a request against the client registration and the
+// provider policy, so that changes made by the application cannot weaken
+// security.
+func (p *Provider) checkRequest(iss *resolvedIssuer, client *Client, req *AuthorizationRequest) error {
+	if err := p.checkDelivery(iss, client, req); err != nil {
+		return err
+	}
+	invalid := invalidRequest
+	switch {
+	case !client.allowsGrant(GrantTypeAuthorizationCode):
+		return invalid("the client may not use the authorization code grant")
+	case req.ResponseType != "code":
+		return invalid("response_type must be code")
 	}
 	for _, s := range req.Scopes {
 		if !validScopeToken(s) || !slices.Contains(client.Scopes, s) {

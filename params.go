@@ -47,12 +47,14 @@ func (p params) isRepeated(name string) bool {
 
 // parseForm reads an application/x-www-form-urlencoded request body.
 // Parameters in the query string are ignored.
-func parseForm(r *http.Request) (params, *Error) {
+// w may be nil; when set, the server closes the connection after an
+// oversized body.
+func parseForm(w http.ResponseWriter, r *http.Request) (params, *Error) {
 	ct, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || ct != "application/x-www-form-urlencoded" {
 		return params{}, errInvalidRequest("the request body must be application/x-www-form-urlencoded")
 	}
-	r.Body = http.MaxBytesReader(nil, r.Body, maxBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		return params{}, errInvalidRequest("the request body could not be parsed")
 	}

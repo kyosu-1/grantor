@@ -11,7 +11,7 @@ func (p *Provider) serveIntrospection(w http.ResponseWriter, r *http.Request, is
 	if !allowMethods(w, r, http.MethodPost) {
 		return
 	}
-	q, perr := parseForm(r)
+	q, perr := parseForm(w, r)
 	if perr != nil {
 		p.WriteTokenError(w, r, perr)
 		return

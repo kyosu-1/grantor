@@ -43,8 +43,8 @@ type Error struct {
 	// sent as error_uri.
 	URI string
 	// StatusCode is the HTTP status of JSON error responses, such as those
-	// of the token endpoint. Zero selects the status RFC 6749 and RFC 6750
-	// define for Code.
+	// of the token endpoint. Zero, or a value outside 400-599, selects the
+	// status RFC 6749 and RFC 6750 define for Code.
 	StatusCode int
 
 	cause error
@@ -79,7 +79,7 @@ func (e *Error) Is(target error) bool {
 
 // statusCode returns the HTTP status for a token-style JSON error response.
 func (e *Error) statusCode() int {
-	if e.StatusCode != 0 {
+	if e.StatusCode >= 400 && e.StatusCode <= 599 {
 		return e.StatusCode
 	}
 	switch e.Code {
@@ -122,6 +122,9 @@ func errServer(cause error) *Error {
 func asProtocolError(err error) *Error {
 	var e *Error
 	if errors.As(err, &e) {
+		if e == nil {
+			return errServer(errors.New("a nil *grantor.Error was returned as an error"))
+		}
 		return e
 	}
 	return errServer(err)

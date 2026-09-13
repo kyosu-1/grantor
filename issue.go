@@ -12,6 +12,10 @@ import (
 // whether access is granted and issues tokens with [Provider.IssueTokens].
 // Returning an *Error sends it to the client; other errors become
 // server_error.
+//
+// req.Client has authenticated unless it is a public client, which is only
+// identified by client_id; such grants must rely on credentials in the
+// request itself.
 type GrantFunc func(ctx context.Context, req *TokenRequest) (*TokenResponse, error)
 
 // Grant describes the access a custom grant issues tokens for.
@@ -44,10 +48,12 @@ type Issuance struct {
 	Subject  string
 	AuthTime time.Time
 	// Scopes are the scopes of the access token. The hook may remove scopes
-	// but not add any.
+	// but not add any. A refresh token keeps the full scope of the grant,
+	// and for the authorization code grant an OpenID Connect request still
+	// receives an ID token.
 	Scopes []string
 	// RefreshToken reports whether a refresh token is issued. The hook may
-	// set it to false.
+	// set it to false; removing offline_access from Scopes does not.
 	RefreshToken bool
 }
 
@@ -61,10 +67,17 @@ func (p *Provider) IssueTokens(ctx context.Context, req *TokenRequest, g Grant) 
 }
 
 func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, g Grant) (*TokenResponse, *Error) {
-	if perr := checkTokenRequest(req); perr != nil {
+	client, perr := checkTokenRequest(req)
+	if perr != nil {
 		return nil, perr
 	}
-	client := req.Client
+	switch req.GrantType {
+	case GrantTypeAuthorizationCode, GrantTypeRefreshToken, GrantTypeClientCredentials:
+		return nil, errServer(fmt.Errorf("IssueTokens is for custom grants, not %s", req.GrantType))
+	}
+	if !client.allowsGrant(req.GrantType) {
+		return nil, newError(CodeUnauthorizedClient, "the client may not use this grant type")
+	}
 	if g.Subject != "" {
 		if err := validateSubject(g.Subject); err != nil {
 			return nil, errServer(err)
@@ -95,7 +108,7 @@ func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, g Grant) (
 		ACR:      g.ACR,
 		AMR:      g.AMR,
 	}
-	return p.issueTokens(ctx, req.iss, client, grant, scopes, g.RefreshToken, "", req.GrantType)
+	return p.issueTokens(ctx, req.iss, client, grant, scopes, g.RefreshToken, req.GrantType)
 }
 
 // runBeforeIssue calls Config.BeforeIssue and returns the access token scopes
@@ -116,11 +129,7 @@ func (p *Provider) runBeforeIssue(ctx context.Context, iss *resolvedIssuer, clie
 		RefreshToken: withRefresh,
 	}
 	if err := p.cfg.BeforeIssue(ctx, is); err != nil {
-		var e *Error
-		if errors.As(err, &e) {
-			return nil, false, e
-		}
-		return nil, false, errServer(fmt.Errorf("BeforeIssue: %w", err))
+		return nil, false, asProtocolError(err)
 	}
 	var narrowed []string
 	for _, s := range is.Scopes {

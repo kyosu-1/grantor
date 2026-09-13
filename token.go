@@ -14,18 +14,22 @@ import (
 // TokenRequest is a parsed token request from an authenticated client,
 // returned by [Provider.ParseTokenRequest].
 type TokenRequest struct {
-	// Client is the authenticated client. It must not be replaced.
+	// Client is the authenticated client, or for public clients the client
+	// identified by client_id. Changing it has no effect; replacing it makes
+	// Exchange fail.
 	Client    *Client
 	GrantType GrantType
-	// Scopes is the scope parameter, or nil if it was not sent. It may be
-	// narrowed before Exchange; for the authorization code and refresh token
-	// grants it then narrows the access token.
+	// Scopes is the scope parameter, or nil if it was not sent. It is always
+	// nil for the authorization code grant, which has no scope parameter.
+	// Setting or narrowing it before Exchange narrows the access token of
+	// the authorization code and refresh token grants and the scope of the
+	// client credentials grant.
 	Scopes []string
 	// Form holds the request parameters except client credentials.
 	Form url.Values
 
-	iss      *resolvedIssuer
-	clientID string
+	iss    *resolvedIssuer
+	client Client // the authenticated client, unaffected by changes to Client
 }
 
 // TokenResponse is a successful token response.
@@ -45,18 +49,18 @@ func (p *Provider) ParseTokenRequest(r *http.Request) (*TokenRequest, error) {
 	if err != nil {
 		return nil, &Error{Code: CodeInvalidRequest, Description: "unknown issuer", StatusCode: http.StatusNotFound, cause: err}
 	}
-	req, perr := p.parseToken(r, iss)
+	req, perr := p.parseToken(nil, r, iss)
 	if perr != nil {
 		return nil, perr
 	}
 	return req, nil
 }
 
-func (p *Provider) parseToken(r *http.Request, iss *resolvedIssuer) (*TokenRequest, *Error) {
+func (p *Provider) parseToken(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer) (*TokenRequest, *Error) {
 	if r.Method != http.MethodPost {
 		return nil, &Error{Code: CodeInvalidRequest, Description: "the token endpoint only accepts POST", StatusCode: http.StatusMethodNotAllowed}
 	}
-	q, perr := parseForm(r)
+	q, perr := parseForm(w, r)
 	if perr != nil {
 		return nil, perr
 	}
@@ -75,14 +79,14 @@ func (p *Provider) parseToken(r *http.Request, iss *resolvedIssuer) (*TokenReque
 		GrantType: GrantType(q.get("grant_type")),
 		Form:      url.Values{},
 		iss:       iss,
-		clientID:  client.ID,
+		client:    *client,
 	}
 	for name, v := range q.values {
 		if name != "client_secret" && name != "client_assertion" {
 			req.Form.Set(name, v)
 		}
 	}
-	if q.has("scope") {
+	if q.has("scope") && req.GrantType != GrantTypeAuthorizationCode {
 		req.Scopes = splitSpaces(q.get("scope"))
 		if req.Scopes == nil {
 			req.Scopes = []string{}
@@ -92,15 +96,17 @@ func (p *Provider) parseToken(r *http.Request, iss *resolvedIssuer) (*TokenReque
 }
 
 // checkTokenRequest rejects token requests that were not created by
-// ParseTokenRequest or whose client was replaced.
-func checkTokenRequest(req *TokenRequest) *Error {
+// ParseTokenRequest or whose client was replaced, and returns a copy of the
+// authenticated client.
+func checkTokenRequest(req *TokenRequest) (*Client, *Error) {
 	if req == nil || req.iss == nil {
-		return errServer(errors.New("the TokenRequest was not created by ParseTokenRequest"))
+		return nil, errServer(errors.New("the TokenRequest was not created by ParseTokenRequest"))
 	}
-	if req.Client == nil || req.Client.ID != req.clientID {
-		return errServer(errors.New("TokenRequest.Client was replaced"))
+	if req.Client == nil || req.Client.ID != req.client.ID {
+		return nil, errServer(errors.New("TokenRequest.Client was replaced"))
 	}
-	return nil
+	c := req.client
+	return &c, nil
 }
 
 // Exchange performs the grant of a token request and issues tokens.
@@ -113,22 +119,23 @@ func (p *Provider) Exchange(ctx context.Context, req *TokenRequest) (*TokenRespo
 }
 
 func (p *Provider) exchange(ctx context.Context, req *TokenRequest) (*TokenResponse, *Error) {
-	if perr := checkTokenRequest(req); perr != nil {
+	client, perr := checkTokenRequest(req)
+	if perr != nil {
 		return nil, perr
 	}
 	switch req.GrantType {
 	case GrantTypeAuthorizationCode:
-		return p.exchangeAuthorizationCode(ctx, req)
+		return p.exchangeAuthorizationCode(ctx, req, client)
 	case GrantTypeRefreshToken:
-		return p.exchangeRefreshToken(ctx, req)
+		return p.exchangeRefreshToken(ctx, req, client)
 	case GrantTypeClientCredentials:
-		return p.exchangeClientCredentials(ctx, req)
+		return p.exchangeClientCredentials(ctx, req, client)
 	}
 	fn, ok := p.cfg.Grants[req.GrantType]
 	if !ok {
 		return nil, newError(CodeUnsupportedGrantType, "the grant type is not supported")
 	}
-	if !req.Client.allowsGrant(req.GrantType) {
+	if !client.allowsGrant(req.GrantType) {
 		return nil, newError(CodeUnauthorizedClient, "the client may not use this grant type")
 	}
 	resp, err := fn(ctx, req)
@@ -151,7 +158,7 @@ func (p *Provider) serveToken(w http.ResponseWriter, r *http.Request, iss *resol
 	if !allowMethods(w, r, http.MethodPost) {
 		return
 	}
-	req, perr := p.parseToken(r, iss)
+	req, perr := p.parseToken(w, r, iss)
 	if perr != nil {
 		p.WriteTokenError(w, r, perr)
 		return
@@ -164,8 +171,8 @@ func (p *Provider) serveToken(w http.ResponseWriter, r *http.Request, iss *resol
 	p.WriteTokenResponse(w, resp)
 }
 
-func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequest) (*TokenResponse, *Error) {
-	client, iss := req.Client, req.iss
+func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
+	iss := req.iss
 	if !client.allowsGrant(GrantTypeAuthorizationCode) {
 		return nil, newError(CodeUnauthorizedClient, "the client may not use the authorization code grant")
 	}
@@ -203,17 +210,25 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 	if perr != nil {
 		return nil, perr
 	}
+	withRefresh := client.allowsGrant(GrantTypeRefreshToken) &&
+		(!t.HasScope("openid") || t.HasScope("offline_access"))
+	// The hook runs before the code is consumed, so that a failing hook does
+	// not turn the client's retry into a reuse that revokes the grant.
+	accessScopes, withRefresh, perr = p.runBeforeIssue(ctx, iss, client, t, req.GrantType, accessScopes, withRefresh)
+	if perr != nil {
+		return nil, perr
+	}
 	if perr := p.consume(ctx, hash); perr != nil {
 		return nil, perr
 	}
-
-	withRefresh := client.allowsGrant(GrantTypeRefreshToken) &&
-		(!t.HasScope("openid") || t.HasScope("offline_access"))
-	return p.issueTokens(ctx, iss, client, t, accessScopes, withRefresh, t.Nonce, req.GrantType)
+	// OpenID Connect Core section 3.1.3.3: a successful code exchange for an
+	// OpenID Connect request returns an ID token, even if the access token
+	// scope was narrowed.
+	return p.mintTokens(ctx, iss, client, t, accessScopes, withRefresh, t.HasScope("openid"), t.Nonce)
 }
 
-func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest) (*TokenResponse, *Error) {
-	client, iss := req.Client, req.iss
+func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
+	iss := req.iss
 	if !client.allowsGrant(GrantTypeRefreshToken) {
 		return nil, newError(CodeUnauthorizedClient, "the client may not use the refresh token grant")
 	}
@@ -237,16 +252,20 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest) 
 	if perr := checkClientScopes(client, t.Scopes); perr != nil {
 		return nil, perr
 	}
+	accessScopes, withRefresh, perr := p.runBeforeIssue(ctx, iss, client, t, req.GrantType, accessScopes, true)
+	if perr != nil {
+		return nil, perr
+	}
 	if perr := p.consume(ctx, hash); perr != nil {
 		return nil, perr
 	}
 	// Refresh tokens are rotated on every use; the new refresh token keeps
 	// the scope of the grant, while the access token may be narrowed.
-	return p.issueTokens(ctx, iss, client, t, accessScopes, true, "", req.GrantType)
+	return p.mintTokens(ctx, iss, client, t, accessScopes, withRefresh, slices.Contains(accessScopes, "openid"), "")
 }
 
-func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequest) (*TokenResponse, *Error) {
-	client, iss := req.Client, req.iss
+func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
+	iss := req.iss
 	if client.isPublic() || !client.allowsGrant(GrantTypeClientCredentials) {
 		return nil, newError(CodeUnauthorizedClient, "the client may not use the client credentials grant")
 	}
@@ -258,7 +277,7 @@ func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequ
 		return nil, newError(CodeInvalidScope, "the client credentials grant has no end-user")
 	}
 	grant := &Token{GrantID: randomToken(), Issuer: iss.url, ClientID: client.ID, Scopes: scopes}
-	return p.issueTokens(ctx, iss, client, grant, scopes, false, "", req.GrantType)
+	return p.issueTokens(ctx, iss, client, grant, scopes, false, req.GrantType)
 }
 
 // narrowScopes applies a requested scope to the scopes a grant allows. A nil
@@ -347,14 +366,22 @@ func (p *Provider) revokeReusedGrant(ctx context.Context, t *Token) *Error {
 	return errInvalidGrant("the grant is invalid, expired or revoked")
 }
 
-// issueTokens issues an access token with accessScopes, and optionally a
-// refresh token and an ID token, for grant. Every grant type issues tokens
-// here, so Config.BeforeIssue sees all of them.
-func (p *Provider) issueTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, accessScopes []string, withRefresh bool, nonce string, grantType GrantType) (*TokenResponse, *Error) {
+// issueTokens runs Config.BeforeIssue and issues tokens for grants that do
+// not consume a single-use token: client credentials and custom grants. An
+// ID token is issued when the access token has the openid scope and the
+// grant has a subject.
+func (p *Provider) issueTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, accessScopes []string, withRefresh bool, grantType GrantType) (*TokenResponse, *Error) {
 	accessScopes, withRefresh, perr := p.runBeforeIssue(ctx, iss, client, grant, grantType, accessScopes, withRefresh)
 	if perr != nil {
 		return nil, perr
 	}
+	return p.mintTokens(ctx, iss, client, grant, accessScopes, withRefresh, slices.Contains(accessScopes, "openid"), "")
+}
+
+// mintTokens creates and stores an access token with accessScopes, and
+// optionally a refresh token and an ID token, for grant. Every grant type
+// issues tokens here after Config.BeforeIssue has run.
+func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, accessScopes []string, withRefresh, withIDToken bool, nonce string) (*TokenResponse, *Error) {
 	now := p.now()
 	accessToken := randomToken()
 	resp := &TokenResponse{
@@ -388,7 +415,7 @@ func (p *Provider) issueTokens(ctx context.Context, iss *resolvedIssuer, client 
 		resp.RefreshToken = refreshToken
 	}
 
-	if slices.Contains(accessScopes, "openid") && grant.Subject != "" {
+	if withIDToken && grant.Subject != "" {
 		idToken, err := p.issueIDToken(ctx, iss, client, access, nonce, accessToken)
 		if err != nil {
 			return nil, errServer(err)
