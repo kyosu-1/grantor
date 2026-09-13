@@ -84,6 +84,19 @@ func (p *Provider) allowedClaims(grant *Token, requested map[string]*ClaimReques
 	return allowed
 }
 
+// claimsForClient reduces a claims request to the claims the client may
+// receive: those mapped from a scope the client is registered for, plus the
+// sub, acr and auth_time claims whose requests affect authentication.
+func (p *Provider) claimsForClient(client *Client, c *ClaimsRequest) *ClaimsRequest {
+	allowed := map[string]bool{"sub": true, "acr": true, "auth_time": true}
+	for _, scope := range client.Scopes {
+		for _, name := range p.scopeClaims(scope) {
+			allowed[name] = true
+		}
+	}
+	return c.filter(func(name string) bool { return allowed[name] })
+}
+
 // endUserClaims returns the filtered end-user claims for a grant.
 func (p *Provider) endUserClaims(ctx context.Context, grant *Token, allowed map[string]bool) (map[string]any, error) {
 	out := map[string]any{}

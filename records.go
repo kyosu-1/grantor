@@ -1,6 +1,7 @@
 package grantor
 
 import (
+	"maps"
 	"slices"
 	"time"
 )
@@ -40,9 +41,13 @@ type AuthorizationRequest struct {
 	ClaimsLocales []string       `json:"claims_locales,omitempty"`
 	LoginHint     string         `json:"login_hint,omitempty"`
 	ACRValues     []string       `json:"acr_values,omitempty"`
-	// IDTokenHintSubject is the subject of a valid id_token_hint.
-	IDTokenHintSubject string         `json:"id_token_hint_subject,omitempty"`
-	Claims             *ClaimsRequest `json:"claims,omitempty"`
+	// RequestedSubject is the end-user the client asked for, with a valid
+	// id_token_hint or a sub claim requested with a value. Only this end-user
+	// may be approved.
+	RequestedSubject string `json:"requested_subject,omitempty"`
+	// Claims is the claims request parameter, reduced to the claims the
+	// client may receive. See [Approval.Claims].
+	Claims *ClaimsRequest `json:"claims,omitempty"`
 
 	// BindingHash binds the request to the user agent that started it.
 	BindingHash string `json:"binding_hash,omitempty"`
@@ -154,4 +159,48 @@ type ClaimRequest struct {
 	Essential bool  `json:"essential,omitempty"`
 	Value     any   `json:"value,omitempty"`
 	Values    []any `json:"values,omitempty"`
+}
+
+// Names returns the sorted names of the end-user claims requested for the
+// ID token or the UserInfo response. Claims that the provider sets itself,
+// such as sub and acr, are not included. Names is safe to call on a nil
+// *ClaimsRequest.
+func (c *ClaimsRequest) Names() []string {
+	if c == nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, m := range []map[string]*ClaimRequest{c.IDToken, c.UserInfo} {
+		for name := range m {
+			if !protocolClaims[name] {
+				set[name] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(set))
+}
+
+// filter returns the part of the request for which keep returns true, or
+// nil if nothing remains.
+func (c *ClaimsRequest) filter(keep func(name string) bool) *ClaimsRequest {
+	if c == nil {
+		return nil
+	}
+	sub := func(m map[string]*ClaimRequest) map[string]*ClaimRequest {
+		var out map[string]*ClaimRequest
+		for name, req := range m {
+			if keep(name) {
+				if out == nil {
+					out = map[string]*ClaimRequest{}
+				}
+				out[name] = req
+			}
+		}
+		return out
+	}
+	out := &ClaimsRequest{IDToken: sub(c.IDToken), UserInfo: sub(c.UserInfo)}
+	if out.IDToken == nil && out.UserInfo == nil {
+		return nil
+	}
+	return out
 }

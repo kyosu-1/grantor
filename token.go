@@ -31,7 +31,7 @@ func (p *Provider) serveToken(w http.ResponseWriter, r *http.Request, iss *resol
 		p.writeTokenError(w, r, errInvalidRequest("parameters must not be repeated"))
 		return
 	}
-	client, perr := p.authenticateClient(r, iss, q, iss.endpoint(PathToken))
+	client, perr := p.authenticateClient(r, iss, q)
 	if perr != nil {
 		p.writeTokenError(w, r, perr)
 		return
@@ -80,6 +80,9 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, iss *resolvedI
 	if perr := verifyPKCE(t, q.get("code_verifier")); perr != nil {
 		return nil, perr
 	}
+	if perr := checkClientScopes(client, t.Scopes); perr != nil {
+		return nil, perr
+	}
 	if perr := p.consume(ctx, hash); perr != nil {
 		return nil, perr
 	}
@@ -113,10 +116,8 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, iss *resolvedIssuer
 			}
 		}
 	}
-	for _, s := range t.Scopes {
-		if !slices.Contains(client.Scopes, s) {
-			return nil, newError(CodeInvalidScope, "the client may no longer request the granted scope")
-		}
+	if perr := checkClientScopes(client, t.Scopes); perr != nil {
+		return nil, perr
 	}
 	if perr := p.consume(ctx, hash); perr != nil {
 		return nil, perr
@@ -141,6 +142,17 @@ func (p *Provider) exchangeClientCredentials(ctx context.Context, iss *resolvedI
 	return p.issueTokens(ctx, iss, client, grant, scopes, false, "")
 }
 
+// checkClientScopes rejects a grant whose scopes the client is no longer
+// registered for.
+func checkClientScopes(client *Client, scopes []string) *Error {
+	for _, s := range scopes {
+		if !slices.Contains(client.Scopes, s) {
+			return newError(CodeInvalidScope, "the client may no longer request the granted scope")
+		}
+	}
+	return nil
+}
+
 // usableSingleUseToken loads an authorization code or refresh token and
 // checks that client may redeem it. It does not consume the token.
 func (p *Provider) usableSingleUseToken(ctx context.Context, iss *resolvedIssuer, client *Client, hash string, typ TokenType) (*Token, *Error) {
@@ -151,11 +163,16 @@ func (p *Provider) usableSingleUseToken(ctx context.Context, iss *resolvedIssuer
 	if err != nil {
 		return nil, errServer(err)
 	}
-	if t.Type != typ || t.Issuer != iss.url || t.ClientID != client.ID || !p.now().Before(t.ExpiresAt) {
+	if t.Type != typ || t.Issuer != iss.url || t.ClientID != client.ID {
 		return nil, errInvalidGrant("the grant is invalid, expired or revoked")
 	}
+	// Reuse is detected even after expiry, so that a replayed code or refresh
+	// token still revokes what was issued from it.
 	if !t.ConsumedAt.IsZero() {
 		return nil, p.revokeReusedGrant(ctx, t)
+	}
+	if !p.now().Before(t.ExpiresAt) {
+		return nil, errInvalidGrant("the grant is invalid, expired or revoked")
 	}
 	return t, nil
 }

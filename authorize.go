@@ -53,6 +53,12 @@ type Approval struct {
 
 	// AMR lists the authentication methods used.
 	AMR []string
+
+	// Claims lists the claims requested individually with the claims
+	// parameter that the end-user agreed to release, as returned by
+	// [ClaimsRequest.Names]. Claims granted through Scopes need not be
+	// listed.
+	Claims []string
 }
 
 // authorizationTarget is where an authorization response is delivered.
@@ -100,7 +106,7 @@ func (p *Provider) serveAuthorization(w http.ResponseWriter, r *http.Request, is
 		binding := randomToken()
 		req.BindingHash = hashToken(binding)
 		cookie := &http.Cookie{
-			Name:     bindingCookieName(req.ID),
+			Name:     bindingCookieName(req.ID, iss.secure),
 			Value:    binding,
 			Path:     "/",
 			MaxAge:   int(p.cfg.Lifetimes.AuthorizationRequest / time.Second),
@@ -159,8 +165,14 @@ func (p *Provider) authorizationTarget(ctx context.Context, iss *resolvedIssuer,
 	}
 	if mode := q.get("response_mode"); mode != "" && !q.isRepeated("response_mode") {
 		switch mode {
-		case responseModeQuery, responseModeFragment, responseModeFormPost:
+		case responseModeQuery, responseModeFragment:
 			target.mode = mode
+		case responseModeFormPost:
+			// A form cannot be posted to a custom URI scheme; errors about the
+			// response mode are then delivered in the query instead.
+			if isHTTPURL(target.redirectURI) {
+				target.mode = mode
+			}
 		}
 	}
 	return client, target, nil
@@ -173,9 +185,9 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 	if len(q.repeated) > 0 {
 		return nil, errInvalidRequest("parameters must not be repeated")
 	}
-	for name, v := range q.values {
+	for _, v := range q.values {
 		if len(v) > maxParamLength {
-			return nil, errInvalidRequest(fmt.Sprintf("%s is too long", name))
+			return nil, errInvalidRequest("a parameter is too long")
 		}
 	}
 	if q.has("request") {
@@ -185,10 +197,7 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 		return nil, newError(CodeRequestURINotSupported, "request_uri is not supported")
 	}
 	if mode := q.get("response_mode"); mode != "" && mode != target.mode {
-		return nil, errInvalidRequest("unsupported response_mode")
-	}
-	if target.mode == responseModeFormPost && !isHTTPURL(target.redirectURI) {
-		return nil, errInvalidRequest("response_mode=form_post requires an http or https redirect_uri")
+		return nil, errInvalidRequest("the response_mode is not supported for this redirect_uri")
 	}
 
 	switch rt := q.get("response_type"); rt {
@@ -222,11 +231,17 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 		ExpiresAt:            now.Add(p.cfg.Lifetimes.AuthorizationRequest),
 	}
 
-	scopes, perr := validateScopes(client, q.get("scope"))
-	if perr != nil {
-		return nil, perr
+	// OpenID Connect Core section 3.1.2.1: scope values that are not
+	// understood SHOULD be ignored. Scopes the client may not request are
+	// ignored the same way; the token response reports the granted scope.
+	for _, s := range splitSpaces(q.get("scope")) {
+		if !validScopeToken(s) {
+			return nil, newError(CodeInvalidScope, "scope contains invalid characters")
+		}
+		if slices.Contains(client.Scopes, s) {
+			req.Scopes = append(req.Scopes, s)
+		}
 	}
-	req.Scopes = scopes
 
 	if perr := parsePKCE(client, q, req); perr != nil {
 		return nil, perr
@@ -258,7 +273,7 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 		if err := json.Unmarshal([]byte(v), &claims); err != nil {
 			return nil, errInvalidRequest("claims is not a valid JSON object")
 		}
-		req.Claims = &claims
+		req.Claims = p.claimsForClient(client, &claims)
 	}
 
 	if v := q.get("id_token_hint"); v != "" {
@@ -266,11 +281,23 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 		if err != nil {
 			return nil, errInvalidRequest("id_token_hint is not valid")
 		}
-		req.IDTokenHintSubject = sub
+		req.RequestedSubject = sub
+	}
+	// OpenID Connect Core section 3.1.2.2: a sub claim requested with a value
+	// restricts the response to that end-user.
+	if req.Claims != nil {
+		if sub, ok := req.Claims.IDToken["sub"]; ok && sub != nil && sub.Value != nil {
+			s, ok := sub.Value.(string)
+			if !ok || s == "" || (req.RequestedSubject != "" && req.RequestedSubject != s) {
+				return nil, errInvalidRequest("the requested sub claim value is invalid or conflicts with id_token_hint")
+			}
+			req.RequestedSubject = s
+		}
 	}
 	return req, nil
 }
 
+// validateScopes checks the scope of a client credentials request.
 func validateScopes(client *Client, scope string) ([]string, *Error) {
 	scopes := splitSpaces(scope)
 	for _, s := range scopes {
@@ -278,7 +305,7 @@ func validateScopes(client *Client, scope string) ([]string, *Error) {
 			return nil, newError(CodeInvalidScope, "scope contains invalid characters")
 		}
 		if !slices.Contains(client.Scopes, s) {
-			return nil, newError(CodeInvalidScope, fmt.Sprintf("the client may not request the %s scope", s))
+			return nil, newError(CodeInvalidScope, "the client may not request one of the scopes")
 		}
 	}
 	return scopes, nil
@@ -326,7 +353,7 @@ func (p *Provider) pendingRequest(r *http.Request, id string) (*resolvedIssuer, 
 		return nil, nil, ErrAuthorizationRequestNotFound
 	}
 	if req.BindingHash != "" {
-		c, err := r.Cookie(bindingCookieName(req.ID))
+		c, err := r.Cookie(bindingCookieName(req.ID, iss.secure))
 		if err != nil || subtle.ConstantTimeCompare([]byte(hashToken(c.Value)), []byte(req.BindingHash)) != 1 {
 			return nil, nil, ErrAuthorizationRequestNotFound
 		}
@@ -346,7 +373,7 @@ func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, id string, a 
 	if err != nil {
 		return err
 	}
-	scopes, err := p.validateApproval(req, &a)
+	scopes, claims, err := p.validateApproval(req, &a)
 	if err != nil {
 		return err
 	}
@@ -374,7 +401,7 @@ func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, id string, a 
 		AuthTime:             a.AuthTime,
 		ACR:                  a.ACR,
 		AMR:                  a.AMR,
-		Claims:               req.Claims,
+		Claims:               claims,
 		RedirectURI:          req.RedirectURI,
 		RedirectURIInRequest: req.RedirectURIInRequest,
 		Nonce:                req.Nonce,
@@ -434,50 +461,65 @@ func (p *Provider) completeRequest(r *http.Request, req *AuthorizationRequest) e
 	return nil
 }
 
-func (p *Provider) validateApproval(req *AuthorizationRequest, a *Approval) ([]string, error) {
+// validateApproval checks an approval against its request and returns the
+// granted scopes and the approved part of the claims request.
+func (p *Provider) validateApproval(req *AuthorizationRequest, a *Approval) ([]string, *ClaimsRequest, error) {
 	if a.Subject == "" || len(a.Subject) > 255 {
-		return nil, errors.New("grantor: approval subject must be 1 to 255 characters")
+		return nil, nil, errors.New("grantor: approval subject must be 1 to 255 characters")
 	}
 	for i := 0; i < len(a.Subject); i++ {
 		if a.Subject[i] < 0x20 || a.Subject[i] > 0x7e {
-			return nil, errors.New("grantor: approval subject must be printable ASCII")
+			return nil, nil, errors.New("grantor: approval subject must be printable ASCII")
 		}
 	}
 	var scopes []string
 	for _, s := range a.Scopes {
 		if !req.HasScope(s) {
-			return nil, fmt.Errorf("grantor: approved scope %q was not requested", s)
+			return nil, nil, fmt.Errorf("grantor: approved scope %q was not requested", s)
 		}
 		if !slices.Contains(scopes, s) {
 			scopes = append(scopes, s)
 		}
 	}
+	requestedClaims := req.Claims.Names()
+	for _, c := range a.Claims {
+		if !slices.Contains(requestedClaims, c) {
+			return nil, nil, fmt.Errorf("grantor: approved claim %q was not requested", c)
+		}
+	}
 	if !req.IsOpenID() {
-		return scopes, nil
+		return scopes, nil, nil
 	}
 	if !slices.Contains(scopes, "openid") {
-		return nil, errors.New("grantor: the openid scope must be approved for OpenID Connect requests")
+		return nil, nil, errors.New("grantor: the openid scope must be approved for OpenID Connect requests")
 	}
 	now := p.now()
 	if a.AuthTime.IsZero() || a.AuthTime.After(now.Add(time.Minute)) {
-		return nil, errors.New("grantor: approval AuthTime must be set and not in the future")
+		return nil, nil, errors.New("grantor: approval AuthTime must be set and not in the future")
 	}
 	if req.needsAuthentication(a.AuthTime, now) {
-		return nil, errors.New("grantor: the end-user must authenticate again (prompt=login or max_age)")
+		return nil, nil, errors.New("grantor: the end-user must authenticate again (prompt=login or max_age)")
 	}
-	if req.IDTokenHintSubject != "" && req.IDTokenHintSubject != a.Subject {
-		return nil, errors.New("grantor: the authenticated end-user does not match id_token_hint")
+	if req.RequestedSubject != "" && req.RequestedSubject != a.Subject {
+		return nil, nil, errors.New("grantor: the authenticated end-user is not the one the client requested")
 	}
 	if values, essential := requestedEssentialACR(req.Claims); essential {
 		if a.ACR == "" || (len(values) > 0 && !slices.Contains(values, a.ACR)) {
-			return nil, errors.New("grantor: the essential acr claim request is not satisfied")
+			return nil, nil, errors.New("grantor: the essential acr claim request is not satisfied")
 		}
 	}
-	return scopes, nil
+	return scopes, req.Claims.filter(func(name string) bool { return slices.Contains(a.Claims, name) }), nil
 }
 
-func bindingCookieName(requestID string) string {
-	return "grantor_" + hashToken(requestID)[:16]
+// bindingCookieName returns the name of the cookie that binds an
+// authorization request to the user agent. On https the __Host- prefix
+// stops sibling subdomains from setting the cookie.
+func bindingCookieName(requestID string, secure bool) string {
+	name := "grantor_" + hashToken(requestID)[:16]
+	if secure {
+		name = "__Host-" + name
+	}
+	return name
 }
 
 func (p *Provider) clearBinding(w http.ResponseWriter, req *AuthorizationRequest, iss *resolvedIssuer) {
@@ -485,7 +527,7 @@ func (p *Provider) clearBinding(w http.ResponseWriter, req *AuthorizationRequest
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     bindingCookieName(req.ID),
+		Name:     bindingCookieName(req.ID, iss.secure),
 		Path:     "/",
 		MaxAge:   -1,
 		Secure:   iss.secure,

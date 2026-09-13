@@ -40,9 +40,8 @@ func assertionAlgorithmNames() []string {
 }
 
 // authenticateClient authenticates the client of a request to the token,
-// introspection or revocation endpoint (RFC 6749 section 2.3). endpoint is
-// the URL of the endpoint being called.
-func (p *Provider) authenticateClient(r *http.Request, iss *resolvedIssuer, q params, endpoint string) (*Client, *Error) {
+// introspection or revocation endpoint (RFC 6749 section 2.3).
+func (p *Provider) authenticateClient(r *http.Request, iss *resolvedIssuer, q params) (*Client, *Error) {
 	ctx := r.Context()
 	basicID, basicSecret, hasBasic := r.BasicAuth()
 	hasPost := q.has("client_secret")
@@ -79,8 +78,7 @@ func (p *Provider) authenticateClient(r *http.Request, iss *resolvedIssuer, q pa
 		if q.get("client_assertion_type") != clientAssertionTypeJWT {
 			return nil, errInvalidClient("unsupported client_assertion_type")
 		}
-		audiences := []string{iss.url, iss.endpoint(PathToken), endpoint}
-		client, perr := p.verifyClientAssertion(ctx, iss, q.get("client_assertion"), audiences)
+		client, perr := p.verifyClientAssertion(ctx, iss, q.get("client_assertion"))
 		if perr != nil {
 			return nil, perr
 		}
@@ -128,7 +126,12 @@ func (p *Provider) authenticateWithSecret(ctx context.Context, iss *resolvedIssu
 
 // verifyClientAssertion authenticates a private_key_jwt client assertion
 // (RFC 7523 section 2.2 and OpenID Connect Core section 9).
-func (p *Provider) verifyClientAssertion(ctx context.Context, iss *resolvedIssuer, assertion string, audiences []string) (*Client, *Error) {
+//
+// The audience must be a single value: the issuer identifier, as current
+// guidance for private_key_jwt recommends, or the token endpoint URL, which
+// OpenID Connect Core specifies. Multi-valued audiences are rejected, so an
+// assertion made for another server cannot be replayed here.
+func (p *Provider) verifyClientAssertion(ctx context.Context, iss *resolvedIssuer, assertion string) (*Client, *Error) {
 	if assertion == "" {
 		return nil, errInvalidClient("client_assertion is required")
 	}
@@ -178,10 +181,13 @@ func (p *Provider) verifyClientAssertion(ctx context.Context, iss *resolvedIssue
 	if claims.Expiry == nil || claims.ID == "" {
 		return nil, errInvalidClient("client_assertion must contain exp and jti")
 	}
+	if len(claims.Audience) != 1 {
+		return nil, errInvalidClient("client_assertion must have exactly one audience")
+	}
 	expected := jwt.Expected{
 		Issuer:      client.ID,
 		Subject:     client.ID,
-		AnyAudience: audiences,
+		AnyAudience: jwt.Audience{iss.url, iss.endpoint(PathToken)},
 		Time:        now,
 	}
 	if err := claims.ValidateWithLeeway(expected, assertionLeeway); err != nil {

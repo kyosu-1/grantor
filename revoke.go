@@ -19,7 +19,7 @@ func (p *Provider) serveRevocation(w http.ResponseWriter, r *http.Request, iss *
 		p.writeTokenError(w, r, errInvalidRequest("parameters must not be repeated"))
 		return
 	}
-	client, perr := p.authenticateClient(r, iss, q, iss.endpoint(PathRevocation))
+	client, perr := p.authenticateClient(r, iss, q)
 	if perr != nil {
 		p.writeTokenError(w, r, perr)
 		return

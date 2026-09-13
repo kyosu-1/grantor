@@ -265,6 +265,9 @@ func (p *Provider) client(ctx context.Context, iss *resolvedIssuer, id string) (
 	if err != nil {
 		return nil, fmt.Errorf("look up client: %w", err)
 	}
+	if c == nil {
+		return nil, fmt.Errorf("client store returned no client and no error for %q", id)
+	}
 	if c.ID != id {
 		return nil, fmt.Errorf("client store returned client %q for %q", c.ID, id)
 	}

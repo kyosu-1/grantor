@@ -6,9 +6,12 @@
   <div class="scopes">
   {{range .Request.Scopes}}
     <label>
-      {{if eq . "openid"}}<input type="checkbox" checked disabled>{{else}}<input type="checkbox" name="scope_{{.}}" checked>{{end}}
+      {{if eq . "openid"}}<input type="checkbox" checked disabled>{{else}}<input type="checkbox" name="consent:{{.}}" checked>{{end}}
       <code>{{.}}</code>
     </label>
+  {{end}}
+  {{range .Claims}}
+    <label><input type="checkbox" name="consent:claim:{{.}}" checked> <code>{{.}}</code> (claim)</label>
   {{end}}
   </div>
   <div class="actions">

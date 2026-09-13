@@ -18,11 +18,7 @@ import (
 func (p *Provider) issueIDToken(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, nonce, accessToken string) (string, error) {
 	key, ok := iss.keys.forAlg(client.idTokenAlg())
 	if !ok {
-		if client.IDTokenSigningAlg != "" {
-			return "", fmt.Errorf("issuer has no key for the %s algorithm requested by client %q", client.IDTokenSigningAlg, client.ID)
-		}
-		// The issuer has no RS256 key; fall back to its first key.
-		key = &iss.keys.keys[0]
+		return "", fmt.Errorf("issuer has no key for the %s algorithm registered for client %q", client.idTokenAlg(), client.ID)
 	}
 
 	var requested map[string]*ClaimRequest

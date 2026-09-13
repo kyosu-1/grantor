@@ -20,7 +20,7 @@ func (p *Provider) serveIntrospection(w http.ResponseWriter, r *http.Request, is
 		p.writeTokenError(w, r, errInvalidRequest("parameters must not be repeated"))
 		return
 	}
-	client, perr := p.authenticateClient(r, iss, q, iss.endpoint(PathIntrospection))
+	client, perr := p.authenticateClient(r, iss, q)
 	if perr != nil {
 		p.writeTokenError(w, r, perr)
 		return

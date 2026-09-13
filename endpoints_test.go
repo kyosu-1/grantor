@@ -238,7 +238,7 @@ func TestAuthorizationErrorsAreRedirected(t *testing.T) {
 		{"missing response_type", func(q url.Values) { q.Del("response_type") }, "invalid_request"},
 		{"implicit flow", func(q url.Values) { q.Set("response_type", "token") }, "unsupported_response_type"},
 		{"hybrid flow", func(q url.Values) { q.Set("response_type", "code id_token") }, "unsupported_response_type"},
-		{"unregistered scope", func(q url.Values) { q.Set("scope", "openid admin") }, "invalid_scope"},
+		{"invalid scope characters", func(q url.Values) { q.Set("scope", "openid bad\\scope") }, "invalid_scope"},
 		{"repeated parameter", func(q url.Values) { q.Add("scope", "openid") }, "invalid_request"},
 		{"request object", func(q url.Values) { q.Set("request", "eyJhbGciOiJub25lIn0.e30.") }, "request_not_supported"},
 		{"request_uri", func(q url.Values) { q.Set("request_uri", "https://client.example.com/req") }, "request_uri_not_supported"},
@@ -456,10 +456,13 @@ func TestClaimsParameter(t *testing.T) {
 	q := authParams(confidentialClient, "openid", pkcePair{})
 	q.Set("claims", `{"id_token":{"email":null,"acr":{"essential":true,"values":["urn:loa:2"]}},"userinfo":{"phone_number":{"essential":true}}}`)
 	req := e.startAuthorization(q)
-	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), ACR: "urn:loa:1"}); err == nil {
+	if got := req.Claims.Names(); len(got) != 2 || got[0] != "email" || got[1] != "phone_number" {
+		t.Fatalf("Claims.Names() = %v", got)
+	}
+	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), ACR: "urn:loa:1", Claims: req.Claims.Names()}); err == nil {
 		t.Fatal("Approve ignored an unsatisfied essential acr")
 	}
-	rec, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), ACR: "urn:loa:2"})
+	rec, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), ACR: "urn:loa:2", Claims: req.Claims.Names()})
 	if err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
@@ -497,8 +500,8 @@ func TestIDTokenHint(t *testing.T) {
 	q.Set("id_token_hint", hint)
 	q.Set("prompt", "none")
 	req := e.startAuthorization(q)
-	if req.IDTokenHintSubject != "alice" {
-		t.Fatalf("IDTokenHintSubject = %q", req.IDTokenHintSubject)
+	if req.RequestedSubject != "alice" {
+		t.Fatalf("RequestedSubject = %q", req.RequestedSubject)
 	}
 	if _, err := e.approve(req.ID, grantor.Approval{Subject: "bob", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err == nil {
 		t.Fatal("Approve accepted a subject that differs from id_token_hint")

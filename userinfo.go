@@ -9,9 +9,20 @@ import (
 )
 
 func (p *Provider) serveUserInfo(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer) {
-	if !allowMethods(w, r, http.MethodGet, http.MethodPost) {
+	// OpenID Connect Core section 5.3: the UserInfo endpoint SHOULD support
+	// CORS. Requests carry bearer tokens, not cookies, so any origin is safe.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "600")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	if !allowMethods(w, r, http.MethodGet, http.MethodPost, http.MethodOptions) {
+		return
+	}
+	w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate")
 	token, perr := bearerToken(w, r)
 	if perr != nil {
 		p.writeBearerError(w, r, perr)
@@ -50,8 +61,13 @@ func (p *Provider) serveUserInfo(w http.ResponseWriter, r *http.Request, iss *re
 func bearerToken(w http.ResponseWriter, r *http.Request) (string, *Error) {
 	var tokens []string
 	if h := r.Header.Get("Authorization"); h != "" {
-		scheme, value, ok := strings.Cut(h, " ")
-		if !ok || !strings.EqualFold(scheme, "Bearer") || value == "" {
+		scheme, value, _ := strings.Cut(h, " ")
+		switch {
+		case !strings.EqualFold(scheme, "Bearer"):
+			// RFC 6750 section 3.1: other authentication schemes get no
+			// error code.
+			return "", &Error{status: http.StatusUnauthorized}
+		case value == "":
 			return "", errInvalidRequest("malformed Authorization header")
 		}
 		tokens = append(tokens, value)

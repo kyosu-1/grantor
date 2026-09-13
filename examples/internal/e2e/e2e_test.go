@@ -110,7 +110,7 @@ func TestExampleApps(t *testing.T) {
 
 	// Allow everything except email.
 	resp, page = b.do(http.MethodPost, opURL+"/consent", url.Values{
-		"id": {requestID}, "action": {"allow"}, "scope_profile": {"on"}, "scope_offline_access": {"on"},
+		"id": {requestID}, "action": {"allow"}, "consent:profile": {"on"}, "consent:offline_access": {"on"},
 	})
 	if resp.StatusCode != http.StatusOK || resp.Request.URL.String() != rpURL+"/" {
 		t.Fatalf("expected the relying party home page, got %d %s\n%s", resp.StatusCode, resp.Request.URL, page)

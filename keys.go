@@ -101,6 +101,11 @@ func newKeySet(keys []SigningKey) (*keySet, error) {
 		}
 		ks.keys = append(ks.keys, preparedKey{id: k.ID, alg: alg, signer: k.Signer})
 	}
+	// OpenID Connect Discovery section 3: RS256 must be supported, and it is
+	// the default ID token algorithm for clients.
+	if _, ok := ks.forAlg("RS256"); !ok {
+		return nil, errors.New("issuer needs an RSA signing key with the RS256 algorithm")
+	}
 	return ks, nil
 }
 

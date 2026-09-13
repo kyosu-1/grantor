@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,8 +68,9 @@ type session struct {
 	consents map[string]consent // by client ID
 }
 
-// consent remembers which scopes the end-user was asked about for a client,
-// and which of them were granted.
+// consent remembers what the end-user was asked about for a client, and what
+// was granted. Items are scopes, or claim names prefixed with "claim:" for
+// claims requested individually with the claims parameter.
 type consent struct {
 	asked, granted []string
 }
@@ -189,7 +191,7 @@ func (a *App) interact(w http.ResponseWriter, r *http.Request, req *grantor.Auth
 
 func (a *App) continueRequest(w http.ResponseWriter, r *http.Request, req *grantor.AuthorizationRequest, s *session) {
 	loginNeeded := s == nil || req.NeedsAuthentication(s.authTime) ||
-		(req.IDTokenHintSubject != "" && req.IDTokenHintSubject != s.subject) ||
+		(req.RequestedSubject != "" && req.RequestedSubject != s.subject) ||
 		// This example has no account chooser; it shows the login form once.
 		(req.HasPrompt("select_account") && s.authTime.Before(req.CreatedAt))
 	if loginNeeded {
@@ -202,19 +204,19 @@ func (a *App) continueRequest(w http.ResponseWriter, r *http.Request, req *grant
 	}
 
 	if a.autoConsent {
-		a.approve(w, r, req, s, req.Scopes)
+		a.approve(w, r, req, s, consentItems(req))
 		return
 	}
 	a.mu.Lock()
 	previous, ok := s.consents[req.ClientID]
 	a.mu.Unlock()
-	decided := ok && containsAll(previous.asked, req.Scopes)
+	decided := ok && containsAll(previous.asked, consentItems(req))
 	if !decided || req.HasPrompt("consent") {
 		if req.HasPrompt("none") {
 			a.deny(w, r, req.ID, grantor.ErrConsentRequired)
 			return
 		}
-		a.render(w, "consent.html", map[string]any{"Request": req})
+		a.render(w, "consent.html", map[string]any{"Request": req, "Claims": req.Claims.Names()})
 		return
 	}
 	a.approve(w, r, req, s, previous.granted)
@@ -287,23 +289,37 @@ func (a *App) submitConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var granted []string
-	for _, scope := range req.Scopes {
-		// openid is required for OpenID Connect; other scopes can be declined.
-		if scope == "openid" || r.PostForm.Has("scope_"+scope) {
-			granted = append(granted, scope)
+	for _, item := range consentItems(req) {
+		// openid is required for OpenID Connect; everything else can be
+		// declined.
+		if item == "openid" || r.PostForm.Has("consent:"+item) {
+			granted = append(granted, item)
 		}
 	}
 	a.mu.Lock()
-	s.consents[req.ClientID] = consent{asked: req.Scopes, granted: granted}
+	s.consents[req.ClientID] = consent{asked: consentItems(req), granted: granted}
 	a.mu.Unlock()
 	a.approve(w, r, req, s, granted)
 }
 
+func consentItems(req *grantor.AuthorizationRequest) []string {
+	items := slices.Clone(req.Scopes)
+	for _, name := range req.Claims.Names() {
+		items = append(items, "claim:"+name)
+	}
+	return items
+}
+
 func (a *App) approve(w http.ResponseWriter, r *http.Request, req *grantor.AuthorizationRequest, s *session, granted []string) {
-	var scopes []string
-	for _, scope := range req.Scopes {
-		if slices.Contains(granted, scope) {
-			scopes = append(scopes, scope)
+	var scopes, claims []string
+	for _, item := range consentItems(req) {
+		if !slices.Contains(granted, item) {
+			continue
+		}
+		if name, ok := strings.CutPrefix(item, "claim:"); ok {
+			claims = append(claims, name)
+		} else {
+			scopes = append(scopes, item)
 		}
 	}
 	// Password login is the only method here; report it as assurance level
@@ -318,6 +334,7 @@ func (a *App) approve(w http.ResponseWriter, r *http.Request, req *grantor.Autho
 		AuthTime: s.authTime,
 		ACR:      acr,
 		AMR:      []string{"pwd"},
+		Claims:   claims,
 	})
 	if err != nil {
 		a.renderError(w, err)

@@ -76,7 +76,7 @@ func fullAuthorizationRequest() *grantor.AuthorizationRequest {
 		ClaimsLocales:        []string{"en"},
 		LoginHint:            "alice@example.com",
 		ACRValues:            []string{"urn:acr:1"},
-		IDTokenHintSubject:   "alice",
+		RequestedSubject:     "alice",
 		Claims: &grantor.ClaimsRequest{
 			UserInfo: map[string]*grantor.ClaimRequest{"email": nil, "name": {Essential: true}},
 			IDToken:  map[string]*grantor.ClaimRequest{"acr": {Essential: true, Values: []any{"urn:acr:1"}}},
