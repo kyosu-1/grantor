@@ -212,9 +212,9 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 	}
 	withRefresh := client.allowsGrant(GrantTypeRefreshToken) &&
 		(!t.HasScope("openid") || t.HasScope("offline_access"))
-	// The hook runs and the tokens are minted before the code is consumed,
-	// so that a failing hook, encoder or signing key does not turn the
-	// client's retry into a reuse that revokes the grant.
+	// The hook runs and the tokens are minted and stored before the code is
+	// consumed, so that a failing hook, encoder, signing key or storage does
+	// not turn the client's retry into a reuse that revokes the grant.
 	plan, perr := p.planIssuance(ctx, iss, client, t, req.GrantType, accessScopes, withRefresh)
 	if perr != nil {
 		return nil, perr
@@ -226,10 +226,7 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 	if perr != nil {
 		return nil, perr
 	}
-	if perr := p.consume(ctx, hash); perr != nil {
-		return nil, perr
-	}
-	return p.storeTokens(ctx, minted)
+	return p.storeAndConsume(ctx, minted, hash)
 }
 
 func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
@@ -263,16 +260,12 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, 
 	}
 	// Refresh tokens are rotated on every use; the new refresh token keeps
 	// the scope and audience of the grant, while the access token may be
-	// narrowed. As for codes, tokens are minted before the old refresh token
-	// is consumed.
+	// narrowed.
 	minted, perr := p.mintTokens(ctx, iss, client, t, plan, slices.Contains(plan.scopes, "openid"), "", req.GrantType)
 	if perr != nil {
 		return nil, perr
 	}
-	if perr := p.consume(ctx, hash); perr != nil {
-		return nil, perr
-	}
-	return p.storeTokens(ctx, minted)
+	return p.storeAndConsume(ctx, minted, hash)
 }
 
 func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
@@ -395,7 +388,10 @@ func (p *Provider) issueTokens(ctx context.Context, iss *resolvedIssuer, client 
 	if perr != nil {
 		return nil, perr
 	}
-	return p.storeTokens(ctx, minted)
+	if perr := p.storeTokens(ctx, minted); perr != nil {
+		return nil, perr
+	}
+	return minted.resp, nil
 }
 
 // mintedTokens are issued tokens that have not been stored yet.
@@ -406,9 +402,8 @@ type mintedTokens struct {
 
 // mintTokens creates the access token, and optionally a refresh token and an
 // ID token, that plan describes for grant. It runs access token encoders,
-// Config.Claims and signing, which may all fail, and stores nothing, so that
-// grants consume their single-use token only after it succeeded; storeTokens
-// stores the result. Every grant type issues tokens here after
+// Config.Claims and signing, which may all fail, and stores nothing; see
+// storeAndConsume. Every grant type issues tokens here after
 // Config.BeforeIssue has run.
 func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, plan *issuePlan, withIDToken bool, nonce string, grantType GrantType) (*mintedTokens, *Error) {
 	now := p.now()
@@ -476,12 +471,39 @@ func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *
 	return minted, nil
 }
 
-// storeTokens stores minted tokens and returns their token response.
-func (p *Provider) storeTokens(ctx context.Context, minted *mintedTokens) (*TokenResponse, *Error) {
+// storeTokens stores minted tokens.
+func (p *Provider) storeTokens(ctx context.Context, minted *mintedTokens) *Error {
 	for _, t := range minted.records {
 		if err := p.cfg.Storage.CreateToken(ctx, t); err != nil {
-			return nil, errServer(err)
+			return errServer(err)
 		}
 	}
+	return nil
+}
+
+// storeAndConsume stores minted tokens and then consumes the authorization
+// code or refresh token they were issued for. In this order a failure to
+// store leaves the single-use token usable for a retry, and no token of a
+// grant is stored after a revocation of the grant. Tokens stored before a
+// failed consume are revoked, since they are never returned.
+func (p *Provider) storeAndConsume(ctx context.Context, minted *mintedTokens, hash string) (*TokenResponse, *Error) {
+	if perr := p.storeTokens(ctx, minted); perr != nil {
+		p.discardTokens(ctx, minted)
+		return nil, perr
+	}
+	if perr := p.consume(ctx, hash); perr != nil {
+		p.discardTokens(ctx, minted)
+		return nil, perr
+	}
 	return minted.resp, nil
+}
+
+// discardTokens revokes minted tokens that will not be returned to the
+// client. Failures are logged; the token values were never disclosed.
+func (p *Provider) discardTokens(ctx context.Context, minted *mintedTokens) {
+	for _, t := range minted.records {
+		if err := p.cfg.Storage.RevokeToken(ctx, t.Hash); err != nil {
+			p.logError(ctx, "revoke undelivered token", err)
+		}
+	}
 }

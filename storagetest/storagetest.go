@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,6 +28,7 @@ import (
 // Run runs the conformance tests. newStorage must return a new, empty
 // storage for every call.
 func Run(t *testing.T, newStorage func(t *testing.T) grantor.Storage) {
+	t.Run("FixturesAreComplete", testFixturesAreComplete)
 	t.Run("AuthorizationRequestRoundTrip", func(t *testing.T) { testAuthorizationRequestRoundTrip(t, newStorage(t)) })
 	t.Run("AuthorizationRequestConflict", func(t *testing.T) { testAuthorizationRequestConflict(t, newStorage(t)) })
 	t.Run("AuthorizationRequestDeleteOnce", func(t *testing.T) { testAuthorizationRequestDeleteOnce(t, newStorage(t)) })
@@ -37,10 +39,9 @@ func Run(t *testing.T, newStorage func(t *testing.T) grantor.Storage) {
 	t.Run("ConsumeTokenConcurrently", func(t *testing.T) { testConsumeTokenConcurrently(t, newStorage(t)) })
 	t.Run("RevokeToken", func(t *testing.T) { testRevokeToken(t, newStorage(t)) })
 	t.Run("RevokeGrant", func(t *testing.T) { testRevokeGrant(t, newStorage(t)) })
-	t.Run("RevokeGrantCoversLaterTokens", func(t *testing.T) { testRevokeGrantCoversLaterTokens(t, newStorage(t)) })
 	t.Run("ReturnedRecordsAreCopies", func(t *testing.T) { testReturnedRecordsAreCopies(t, newStorage(t)) })
-	t.Run("ClaimAssertionID", func(t *testing.T) { testClaimAssertionID(t, newStorage(t)) })
-	t.Run("ClaimAssertionIDConcurrently", func(t *testing.T) { testClaimAssertionIDConcurrently(t, newStorage(t)) })
+	t.Run("ClaimOnce", func(t *testing.T) { testClaimOnce(t, newStorage(t)) })
+	t.Run("ClaimOnceConcurrently", func(t *testing.T) { testClaimOnceConcurrently(t, newStorage(t)) })
 }
 
 func randomID() string {
@@ -342,21 +343,6 @@ func testRevokeGrant(t *testing.T, s grantor.Storage) {
 	}
 }
 
-func testRevokeGrantCoversLaterTokens(t *testing.T, s grantor.Storage) {
-	ctx := context.Background()
-	grantID := randomID()
-	if err := s.RevokeGrant(ctx, grantID); err != nil {
-		t.Fatalf("RevokeGrant: %v", err)
-	}
-	tok := fullToken(grantor.TokenKindAccessToken, grantID)
-	if err := s.CreateToken(ctx, tok); err != nil && !errors.Is(err, grantor.ErrNotFound) {
-		t.Fatalf("CreateToken after RevokeGrant = %v, want nil or ErrNotFound", err)
-	}
-	if _, err := s.Token(ctx, tok.Hash); !errors.Is(err, grantor.ErrNotFound) {
-		t.Fatalf("Token created after RevokeGrant = %v, want ErrNotFound", err)
-	}
-}
-
 func testReturnedRecordsAreCopies(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
 	req := fullAuthorizationRequest()
@@ -402,36 +388,37 @@ func testReturnedRecordsAreCopies(t *testing.T, s grantor.Storage) {
 	}
 }
 
-func testClaimAssertionID(t *testing.T, s grantor.Storage) {
+func testClaimOnce(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
-	const issuer, client = "https://issuer.example.com", "client-1"
-	jti := randomID()
+	key := "test:" + randomID()
 	exp := time.Now().Add(time.Minute)
-	if err := s.ClaimAssertionID(ctx, issuer, client, jti, exp); err != nil {
-		t.Fatalf("ClaimAssertionID: %v", err)
+	if err := s.ClaimOnce(ctx, key, exp); err != nil {
+		t.Fatalf("ClaimOnce: %v", err)
 	}
-	if err := s.ClaimAssertionID(ctx, issuer, client, jti, exp); !errors.Is(err, grantor.ErrConflict) {
-		t.Fatalf("second ClaimAssertionID = %v, want ErrConflict", err)
+	if err := s.ClaimOnce(ctx, key, exp); !errors.Is(err, grantor.ErrConflict) {
+		t.Fatalf("second ClaimOnce = %v, want ErrConflict", err)
 	}
-	if err := s.ClaimAssertionID(ctx, issuer, "client-2", jti, exp); err != nil {
-		t.Fatalf("ClaimAssertionID for another client: %v", err)
+	if err := s.ClaimOnce(ctx, "test:"+randomID(), exp); err != nil {
+		t.Fatalf("ClaimOnce for another key: %v", err)
 	}
-	if err := s.ClaimAssertionID(ctx, "https://other.example.com", client, jti, exp); err != nil {
-		t.Fatalf("ClaimAssertionID for another issuer: %v", err)
+	long := "test:" + randomID()
+	long += strings.Repeat("k", 128-len(long))
+	if err := s.ClaimOnce(ctx, long, exp); err != nil {
+		t.Fatalf("ClaimOnce with a 128-byte key: %v", err)
 	}
 
-	expired := randomID()
-	if err := s.ClaimAssertionID(ctx, issuer, client, expired, time.Now().Add(-time.Second)); err != nil {
-		t.Fatalf("ClaimAssertionID(expired): %v", err)
+	expired := "test:" + randomID()
+	if err := s.ClaimOnce(ctx, expired, time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("ClaimOnce(expired): %v", err)
 	}
-	if err := s.ClaimAssertionID(ctx, issuer, client, expired, time.Now().Add(time.Minute)); err != nil {
-		t.Fatalf("ClaimAssertionID after the previous claim expired = %v, want nil", err)
+	if err := s.ClaimOnce(ctx, expired, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("ClaimOnce after the previous claim expired = %v, want nil", err)
 	}
 }
 
-func testClaimAssertionIDConcurrently(t *testing.T, s grantor.Storage) {
+func testClaimOnceConcurrently(t *testing.T, s grantor.Storage) {
 	ctx := context.Background()
-	jti := randomID()
+	key := "test:" + randomID()
 	exp := time.Now().Add(time.Minute)
 	const workers = 32
 	var succeeded atomic.Int32
@@ -440,18 +427,36 @@ func testClaimAssertionIDConcurrently(t *testing.T, s grantor.Storage) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := s.ClaimAssertionID(ctx, "https://issuer.example.com", "client-1", jti, exp)
+			err := s.ClaimOnce(ctx, key, exp)
 			switch {
 			case err == nil:
 				succeeded.Add(1)
 			case !errors.Is(err, grantor.ErrConflict):
-				t.Errorf("ClaimAssertionID = %v, want nil or ErrConflict", err)
+				t.Errorf("ClaimOnce = %v, want nil or ErrConflict", err)
 			}
 		}()
 	}
 	wg.Wait()
 	if n := succeeded.Load(); n != 1 {
-		t.Fatalf("%d concurrent ClaimAssertionID calls succeeded, want exactly 1", n)
+		t.Fatalf("%d concurrent ClaimOnce calls succeeded, want exactly 1", n)
+	}
+}
+
+// testFixturesAreComplete fails when a record field is missing from the
+// fixtures, so that every exported field is round-tripped. ConsumedAt is set
+// by ConsumeToken and checked there.
+func testFixturesAreComplete(t *testing.T) {
+	for name, v := range map[string]any{
+		"AuthorizationRequest": fullAuthorizationRequest(),
+		"Token":                fullToken(grantor.TokenKindAuthorizationCode, randomID()),
+	} {
+		rv := reflect.ValueOf(v).Elem()
+		for i := range rv.NumField() {
+			f := rv.Type().Field(i)
+			if f.IsExported() && f.Name != "ConsumedAt" && rv.Field(i).IsZero() {
+				t.Errorf("%s fixture leaves %s empty", name, f.Name)
+			}
+		}
 	}
 }
 

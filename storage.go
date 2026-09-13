@@ -26,9 +26,15 @@ type ClientStore interface {
 // Storage persists authorization requests, tokens and replay-protection state.
 //
 // Records are plain structs; implementations may store them in any form,
-// for example as JSON. Returned records must not alias memory held by the
-// storage. The storagetest package verifies an implementation against this
-// contract, including its concurrency guarantees.
+// for example as JSON, and must persist every exported field. Returned
+// records must not alias memory held by the storage. The storagetest package
+// verifies an implementation against this contract, including its
+// concurrency guarantees.
+//
+// Storage will not gain methods in future versions, so implementations keep
+// compiling. Records may gain fields. Features that need other storage, such
+// as sessions or device codes, take their own interface in an optional
+// Config field.
 type Storage interface {
 	// CreateAuthorizationRequest saves a pending authorization request.
 	// It returns ErrConflict if a request with the same ID exists.
@@ -67,13 +73,14 @@ type Storage interface {
 	// error.
 	RevokeToken(ctx context.Context, hash string) error
 
-	// RevokeGrant revokes every token that has the given GrantID, including
-	// tokens created after the call. Revoking an unknown grant is not an
-	// error.
+	// RevokeGrant revokes every token that has the given GrantID. Revoking an
+	// unknown grant is not an error.
 	RevokeGrant(ctx context.Context, grantID string) error
 
-	// ClaimAssertionID records the jti of a client assertion until expiresAt.
-	// It returns ErrConflict if the same issuer, client and jti were already
-	// claimed and have not expired.
-	ClaimAssertionID(ctx context.Context, issuer, clientID, jti string, expiresAt time.Time) error
+	// ClaimOnce records key until expiresAt, for replay protection. It
+	// returns ErrConflict if key was already claimed and has not expired.
+	// Keys are ASCII strings of at most 128 bytes. The operation must be
+	// atomic: when called concurrently for the same key, exactly one call
+	// returns nil.
+	ClaimOnce(ctx context.Context, key string, expiresAt time.Time) error
 }

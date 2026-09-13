@@ -21,15 +21,12 @@ type Store struct {
 	clients        map[clientKey]*grantor.Client
 	requests       map[string]*grantor.AuthorizationRequest
 	tokens         map[string]*grantor.Token
-	revokedGrants  map[string]bool
-	assertionIDs   map[assertionKey]time.Time
+	claims         map[string]time.Time
 	now            func() time.Time
 	lastCollection time.Time
 }
 
 type clientKey struct{ issuer, id string }
-
-type assertionKey struct{ issuer, clientID, jti string }
 
 var (
 	_ grantor.Storage     = (*Store)(nil)
@@ -39,12 +36,11 @@ var (
 // New returns an empty Store.
 func New() *Store {
 	return &Store{
-		clients:       map[clientKey]*grantor.Client{},
-		requests:      map[string]*grantor.AuthorizationRequest{},
-		tokens:        map[string]*grantor.Token{},
-		revokedGrants: map[string]bool{},
-		assertionIDs:  map[assertionKey]time.Time{},
-		now:           time.Now,
+		clients:  map[clientKey]*grantor.Client{},
+		requests: map[string]*grantor.AuthorizationRequest{},
+		tokens:   map[string]*grantor.Token{},
+		claims:   map[string]time.Time{},
+		now:      time.Now,
 	}
 }
 
@@ -140,7 +136,7 @@ func (s *Store) ConsumeToken(_ context.Context, hash string, now time.Time) (*gr
 
 func (s *Store) tokenLocked(hash string) (*grantor.Token, error) {
 	t, ok := s.tokens[hash]
-	if !ok || s.revokedGrants[t.GrantID] {
+	if !ok {
 		return nil, grantor.ErrNotFound
 	}
 	return t, nil
@@ -158,7 +154,6 @@ func (s *Store) RevokeToken(_ context.Context, hash string) error {
 func (s *Store) RevokeGrant(_ context.Context, grantID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.revokedGrants[grantID] = true
 	for hash, t := range s.tokens {
 		if t.GrantID == grantID {
 			delete(s.tokens, hash)
@@ -167,21 +162,19 @@ func (s *Store) RevokeGrant(_ context.Context, grantID string) error {
 	return nil
 }
 
-// ClaimAssertionID implements grantor.Storage.
-func (s *Store) ClaimAssertionID(_ context.Context, issuer, clientID, jti string, expiresAt time.Time) error {
+// ClaimOnce implements grantor.Storage.
+func (s *Store) ClaimOnce(_ context.Context, key string, expiresAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.collectLocked()
-	key := assertionKey{issuer, clientID, jti}
-	if exp, ok := s.assertionIDs[key]; ok && s.now().Before(exp) {
+	if exp, ok := s.claims[key]; ok && s.now().Before(exp) {
 		return grantor.ErrConflict
 	}
-	s.assertionIDs[key] = expiresAt
+	s.claims[key] = expiresAt
 	return nil
 }
 
-// collectLocked removes expired records at most once a minute. Revoked grant
-// markers are kept, because tokens of the grant may still be created.
+// collectLocked removes expired records at most once a minute.
 func (s *Store) collectLocked() {
 	now := s.now()
 	if now.Sub(s.lastCollection) < time.Minute {
@@ -198,9 +191,9 @@ func (s *Store) collectLocked() {
 			delete(s.tokens, hash)
 		}
 	}
-	for key, exp := range s.assertionIDs {
+	for key, exp := range s.claims {
 		if now.After(exp) {
-			delete(s.assertionIDs, key)
+			delete(s.claims, key)
 		}
 	}
 }

@@ -2,6 +2,8 @@ package grantor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -200,7 +202,7 @@ func (p *Provider) verifyClientAssertion(ctx context.Context, iss *resolvedIssue
 	if exp.After(now.Add(maxAssertionLifetime)) {
 		return nil, errInvalidClient("client_assertion expires too far in the future")
 	}
-	err = p.cfg.Storage.ClaimAssertionID(ctx, iss.url, client.ID, claims.ID, exp.Add(assertionLeeway))
+	err = p.cfg.Storage.ClaimOnce(ctx, assertionKey(iss.url, client.ID, claims.ID), exp.Add(assertionLeeway))
 	if errors.Is(err, ErrConflict) {
 		return nil, errInvalidClient("client_assertion was already used")
 	}
@@ -208,4 +210,14 @@ func (p *Provider) verifyClientAssertion(ctx context.Context, iss *resolvedIssue
 		return nil, errServer(err)
 	}
 	return client, nil
+}
+
+// assertionKey is the Storage.ClaimOnce key of a client assertion's jti.
+func assertionKey(issuer, clientID, jti string) string {
+	h := sha256.New()
+	for _, part := range []string{issuer, clientID, jti} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return "client-assertion:" + base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
