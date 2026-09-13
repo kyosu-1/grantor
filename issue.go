@@ -57,6 +57,22 @@ type Issuance struct {
 	// RefreshToken reports whether a refresh token is issued. The hook may
 	// set it to false; removing offline_access from Scopes does not.
 	RefreshToken bool
+	// Audience lists the audiences of the access token. The hook may remove
+	// audiences but not add any; a refresh token keeps the grant's audience.
+	Audience []string
+	// AccessTokenFormat is the format of the access token. The hook may
+	// choose any built-in or configured format.
+	AccessTokenFormat AccessTokenFormat
+	// AccessTokenClaims are extra claims of the access token, returned in
+	// JWT access tokens and by introspection. IDTokenClaims are extra claims
+	// of the ID token. Protocol claims such as iss, sub, aud and exp cannot
+	// be set.
+	AccessTokenClaims map[string]any
+	IDTokenClaims     map[string]any
+	// Lifetimes of the tokens. The hook may set any positive value.
+	AccessTokenLifetime  time.Duration
+	RefreshTokenLifetime time.Duration
+	IDTokenLifetime      time.Duration
 }
 
 // IssueTokens issues tokens for a custom grant; see [GrantFunc].
@@ -118,37 +134,119 @@ func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, g Grant) (
 	return p.issueTokens(ctx, req.iss, client, grant, scopes, g.RefreshToken, req.GrantType)
 }
 
-// runBeforeIssue calls Config.BeforeIssue and returns the access token scopes
-// and refresh token decision it leaves.
-func (p *Provider) runBeforeIssue(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, grantType GrantType, scopes []string, withRefresh bool) ([]string, bool, *Error) {
+// issuePlan is what an issuance produces after defaults and
+// Config.BeforeIssue have been applied.
+type issuePlan struct {
+	scopes          []string
+	audience        []string
+	refresh         bool
+	format          AccessTokenFormat
+	accessClaims    map[string]any
+	idClaims        map[string]any
+	accessLifetime  time.Duration
+	refreshLifetime time.Duration
+	idLifetime      time.Duration
+}
+
+// planIssuance resolves the format, audience and lifetimes of the tokens for
+// grant, runs Config.BeforeIssue, and checks that the hook only narrowed what
+// it may not widen.
+func (p *Provider) planIssuance(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, grantType GrantType, scopes []string, withRefresh bool) (*issuePlan, *Error) {
+	plan := &issuePlan{
+		scopes:          scopes,
+		audience:        grant.Audience,
+		refresh:         withRefresh,
+		format:          firstFormat(client.AccessTokenFormat, p.cfg.AccessTokenFormat),
+		accessLifetime:  firstDuration(client.AccessTokenLifetime, p.cfg.Lifetimes.AccessToken),
+		refreshLifetime: firstDuration(client.RefreshTokenLifetime, p.cfg.Lifetimes.RefreshToken),
+		idLifetime:      firstDuration(client.IDTokenLifetime, p.cfg.Lifetimes.IDToken),
+	}
 	if p.cfg.BeforeIssue == nil {
-		return scopes, withRefresh, nil
+		return plan, nil
 	}
 	c := *client
 	is := &Issuance{
-		Issuer:       iss.url,
-		GrantType:    grantType,
-		Client:       &c,
-		GrantID:      grant.GrantID,
-		Subject:      grant.Subject,
-		AuthTime:     grant.AuthTime,
-		Scopes:       slices.Clone(scopes),
-		RefreshToken: withRefresh,
+		Issuer:               iss.url,
+		GrantType:            grantType,
+		Client:               &c,
+		GrantID:              grant.GrantID,
+		Subject:              grant.Subject,
+		AuthTime:             grant.AuthTime,
+		Scopes:               slices.Clone(scopes),
+		RefreshToken:         withRefresh,
+		Audience:             slices.Clone(grant.Audience),
+		AccessTokenFormat:    plan.format,
+		AccessTokenLifetime:  plan.accessLifetime,
+		RefreshTokenLifetime: plan.refreshLifetime,
+		IDTokenLifetime:      plan.idLifetime,
 	}
 	if err := p.cfg.BeforeIssue(ctx, is); err != nil {
-		return nil, false, asProtocolError(err)
+		return nil, asProtocolError(err)
 	}
-	var narrowed []string
-	for _, s := range is.Scopes {
-		if !slices.Contains(scopes, s) {
-			return nil, false, errServer(fmt.Errorf("BeforeIssue added the %q scope", s))
+	var err error
+	if plan.scopes, err = narrowed(scopes, is.Scopes, "scope"); err != nil {
+		return nil, errServer(fmt.Errorf("BeforeIssue %w", err))
+	}
+	if plan.audience, err = narrowed(grant.Audience, is.Audience, "audience"); err != nil {
+		return nil, errServer(fmt.Errorf("BeforeIssue %w", err))
+	}
+	switch {
+	case is.RefreshToken && !withRefresh:
+		return nil, errServer(errors.New("BeforeIssue enabled a refresh token"))
+	case !p.knownFormat(is.AccessTokenFormat):
+		return nil, errServer(fmt.Errorf("BeforeIssue chose the unknown access token format %q", is.AccessTokenFormat))
+	case is.AccessTokenLifetime <= 0 || is.RefreshTokenLifetime <= 0 || is.IDTokenLifetime <= 0:
+		return nil, errServer(errors.New("BeforeIssue set a token lifetime that is not positive"))
+	}
+	for name := range is.AccessTokenClaims {
+		if accessTokenProtectedClaims[name] {
+			return nil, errServer(fmt.Errorf("BeforeIssue set the protected access token claim %q", name))
 		}
-		if !slices.Contains(narrowed, s) {
-			narrowed = append(narrowed, s)
+	}
+	for name := range is.IDTokenClaims {
+		if protocolClaims[name] {
+			return nil, errServer(fmt.Errorf("BeforeIssue set the protected ID token claim %q", name))
 		}
 	}
-	if is.RefreshToken && !withRefresh {
-		return nil, false, errServer(errors.New("BeforeIssue enabled a refresh token"))
+	plan.refresh = is.RefreshToken
+	plan.format = is.AccessTokenFormat
+	plan.accessClaims = is.AccessTokenClaims
+	plan.idClaims = is.IDTokenClaims
+	plan.accessLifetime = is.AccessTokenLifetime
+	plan.refreshLifetime = is.RefreshTokenLifetime
+	plan.idLifetime = is.IDTokenLifetime
+	return plan, nil
+}
+
+// narrowed checks that got only contains values of allowed and returns it
+// without duplicates.
+func narrowed(allowed, got []string, what string) ([]string, error) {
+	var out []string
+	for _, v := range got {
+		if !slices.Contains(allowed, v) {
+			return nil, fmt.Errorf("added the %s %q", what, v)
+		}
+		if !slices.Contains(out, v) {
+			out = append(out, v)
+		}
 	}
-	return narrowed, is.RefreshToken, nil
+	return out, nil
+}
+
+func firstFormat(formats ...AccessTokenFormat) AccessTokenFormat {
+	for _, f := range formats {
+		if f != "" {
+			return f
+		}
+	}
+	return AccessTokenFormatOpaque
+}
+
+func firstDuration(durations ...time.Duration) time.Duration {
+	for _, d := range durations {
+		if d > 0 {
+			return d
+		}
+	}
+	return 0
 }

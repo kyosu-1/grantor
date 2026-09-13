@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -15,7 +16,7 @@ import (
 
 // issueIDToken signs an ID token for grant. accessToken, when not empty, is
 // bound with the at_hash claim.
-func (p *Provider) issueIDToken(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, nonce, accessToken string) (string, error) {
+func (p *Provider) issueIDToken(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, nonce, accessToken string, lifetime time.Duration, extra map[string]any) (string, error) {
 	key, ok := iss.keys.forAlg(client.idTokenAlg())
 	if !ok {
 		return "", fmt.Errorf("issuer has no key for the %s algorithm registered for client %q", client.idTokenAlg(), client.ID)
@@ -30,12 +31,15 @@ func (p *Provider) issueIDToken(ctx context.Context, iss *resolvedIssuer, client
 		return "", err
 	}
 
+	for name, value := range extra {
+		claims[name] = value
+	}
 	now := p.now()
 	claims["iss"] = iss.url
 	claims["sub"] = grant.Subject
 	claims["aud"] = client.ID
 	claims["iat"] = now.Unix()
-	claims["exp"] = now.Add(p.cfg.Lifetimes.IDToken).Unix()
+	claims["exp"] = now.Add(lifetime).Unix()
 	if !grant.AuthTime.IsZero() {
 		claims["auth_time"] = grant.AuthTime.Unix()
 	}

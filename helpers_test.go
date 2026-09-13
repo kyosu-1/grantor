@@ -456,3 +456,19 @@ func clientAssertion(t *testing.T, aud string, exp time.Time, jti string, key cr
 	}
 	return s
 }
+
+// parseJWT verifies a JWT with the provider's JWKS and returns its header
+// and claims.
+func (e *env) parseJWT(token string) (map[string]any, map[string]any) {
+	e.t.Helper()
+	claims := e.verifyJWT(token)
+	raw, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[0])
+	if err != nil {
+		e.t.Fatalf("decode JWT header: %v", err)
+	}
+	var header map[string]any
+	if err := json.Unmarshal(raw, &header); err != nil {
+		e.t.Fatalf("parse JWT header: %v", err)
+	}
+	return header, claims
+}

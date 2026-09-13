@@ -2,6 +2,8 @@ package grantor
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -37,4 +39,81 @@ type AccessToken struct {
 	ExpiresAt time.Time
 	// Claims are extra claims set by Config.BeforeIssue.
 	Claims map[string]any
+}
+
+// accessTokenProtectedClaims are set by grantor in JWT access tokens and
+// introspection responses, and cannot be set by Config.BeforeIssue.
+var accessTokenProtectedClaims = map[string]bool{
+	"iss": true, "sub": true, "aud": true, "exp": true, "nbf": true, "iat": true, "jti": true,
+	"client_id": true, "scope": true, "auth_time": true, "acr": true, "amr": true, "cnf": true,
+	"active": true, "token_type": true,
+}
+
+// encodeAccessToken returns the value of an access token in format.
+func (p *Provider) encodeAccessToken(ctx context.Context, iss *resolvedIssuer, client *Client, format AccessTokenFormat, at *AccessToken) (string, error) {
+	sign := func(typ string, claims any) (string, error) {
+		key, ok := iss.keys.forAlg(client.accessTokenAlg())
+		if !ok {
+			return "", fmt.Errorf("issuer has no key for the %s algorithm of client %q", client.accessTokenAlg(), client.ID)
+		}
+		return key.sign(claims, typ)
+	}
+	var value string
+	var err error
+	switch format {
+	case AccessTokenFormatOpaque:
+		return randomToken(), nil
+	case AccessTokenFormatJWT:
+		value, err = sign("at+jwt", jwtAccessTokenClaims(at))
+	default:
+		enc, ok := p.cfg.AccessTokenFormats[format]
+		if !ok {
+			return "", fmt.Errorf("unknown access token format %q", format)
+		}
+		value, err = enc(ctx, at, sign)
+	}
+	if err != nil {
+		return "", fmt.Errorf("encode %s access token: %w", format, err)
+	}
+	if value == "" {
+		return "", fmt.Errorf("the %s access token encoder returned an empty token", format)
+	}
+	return value, nil
+}
+
+// jwtAccessTokenClaims returns the claims of a JWT access token (RFC 9068
+// section 2.2).
+func jwtAccessTokenClaims(at *AccessToken) map[string]any {
+	claims := make(map[string]any, len(at.Claims)+12)
+	for name, value := range at.Claims {
+		claims[name] = value
+	}
+	claims["iss"] = at.Issuer
+	claims["sub"] = at.Subject
+	if at.Subject == "" {
+		// RFC 9068 section 2.2: without an end-user, sub is the client.
+		claims["sub"] = at.ClientID
+	}
+	if len(at.Audience) == 1 {
+		claims["aud"] = at.Audience[0]
+	} else {
+		claims["aud"] = at.Audience
+	}
+	claims["exp"] = at.ExpiresAt.Unix()
+	claims["iat"] = at.IssuedAt.Unix()
+	claims["jti"] = at.ID
+	claims["client_id"] = at.ClientID
+	if len(at.Scopes) > 0 {
+		claims["scope"] = strings.Join(at.Scopes, " ")
+	}
+	if !at.AuthTime.IsZero() {
+		claims["auth_time"] = at.AuthTime.Unix()
+	}
+	if at.ACR != "" {
+		claims["acr"] = at.ACR
+	}
+	if len(at.AMR) > 0 {
+		claims["amr"] = at.AMR
+	}
+	return claims
 }

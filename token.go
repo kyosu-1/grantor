@@ -214,7 +214,7 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 		(!t.HasScope("openid") || t.HasScope("offline_access"))
 	// The hook runs before the code is consumed, so that a failing hook does
 	// not turn the client's retry into a reuse that revokes the grant.
-	accessScopes, withRefresh, perr = p.runBeforeIssue(ctx, iss, client, t, req.GrantType, accessScopes, withRefresh)
+	plan, perr := p.planIssuance(ctx, iss, client, t, req.GrantType, accessScopes, withRefresh)
 	if perr != nil {
 		return nil, perr
 	}
@@ -224,7 +224,7 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 	// OpenID Connect Core section 3.1.3.3: a successful code exchange for an
 	// OpenID Connect request returns an ID token, even if the access token
 	// scope was narrowed.
-	return p.mintTokens(ctx, iss, client, t, accessScopes, withRefresh, t.HasScope("openid"), t.Nonce)
+	return p.mintTokens(ctx, iss, client, t, plan, t.HasScope("openid"), t.Nonce, req.GrantType)
 }
 
 func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
@@ -252,7 +252,7 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, 
 	if perr := checkClientScopes(client, t.Scopes); perr != nil {
 		return nil, perr
 	}
-	accessScopes, withRefresh, perr := p.runBeforeIssue(ctx, iss, client, t, req.GrantType, accessScopes, true)
+	plan, perr := p.planIssuance(ctx, iss, client, t, req.GrantType, accessScopes, true)
 	if perr != nil {
 		return nil, perr
 	}
@@ -260,8 +260,9 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, 
 		return nil, perr
 	}
 	// Refresh tokens are rotated on every use; the new refresh token keeps
-	// the scope of the grant, while the access token may be narrowed.
-	return p.mintTokens(ctx, iss, client, t, accessScopes, withRefresh, slices.Contains(accessScopes, "openid"), "")
+	// the scope and audience of the grant, while the access token may be
+	// narrowed.
+	return p.mintTokens(ctx, iss, client, t, plan, slices.Contains(plan.scopes, "openid"), "", req.GrantType)
 }
 
 func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequest, client *Client) (*TokenResponse, *Error) {
@@ -371,24 +372,46 @@ func (p *Provider) revokeReusedGrant(ctx context.Context, t *Token) *Error {
 // ID token is issued when the access token has the openid scope and the
 // grant has a subject.
 func (p *Provider) issueTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, accessScopes []string, withRefresh bool, grantType GrantType) (*TokenResponse, *Error) {
-	accessScopes, withRefresh, perr := p.runBeforeIssue(ctx, iss, client, grant, grantType, accessScopes, withRefresh)
+	plan, perr := p.planIssuance(ctx, iss, client, grant, grantType, accessScopes, withRefresh)
 	if perr != nil {
 		return nil, perr
 	}
-	return p.mintTokens(ctx, iss, client, grant, accessScopes, withRefresh, slices.Contains(accessScopes, "openid"), "")
+	return p.mintTokens(ctx, iss, client, grant, plan, slices.Contains(plan.scopes, "openid"), "", grantType)
 }
 
-// mintTokens creates and stores an access token with accessScopes, and
-// optionally a refresh token and an ID token, for grant. Every grant type
+// mintTokens creates and stores the access token, and optionally a refresh
+// token and an ID token, that plan describes for grant. Every grant type
 // issues tokens here after Config.BeforeIssue has run.
-func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, accessScopes []string, withRefresh, withIDToken bool, nonce string) (*TokenResponse, *Error) {
+func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, plan *issuePlan, withIDToken bool, nonce string, grantType GrantType) (*TokenResponse, *Error) {
 	now := p.now()
-	accessToken := randomToken()
+	audience := plan.audience
+	if len(audience) == 0 {
+		audience = []string{client.ID}
+	}
+	at := &AccessToken{
+		ID:        randomToken(),
+		Issuer:    iss.url,
+		ClientID:  client.ID,
+		Subject:   grant.Subject,
+		Audience:  slices.Clone(audience),
+		Scopes:    slices.Clone(plan.scopes),
+		GrantType: grantType,
+		AuthTime:  grant.AuthTime,
+		ACR:       grant.ACR,
+		AMR:       slices.Clone(grant.AMR),
+		IssuedAt:  now,
+		ExpiresAt: now.Add(plan.accessLifetime),
+		Claims:    plan.accessClaims,
+	}
+	accessToken, err := p.encodeAccessToken(ctx, iss, client, plan.format, at)
+	if err != nil {
+		return nil, errServer(err)
+	}
 	resp := &TokenResponse{
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
-		ExpiresIn:   int64(p.cfg.Lifetimes.AccessToken.Seconds()),
-		Scope:       strings.Join(accessScopes, " "),
+		ExpiresIn:   int64(plan.accessLifetime.Seconds()),
+		Scope:       strings.Join(plan.scopes, " "),
 	}
 
 	derive := func(value string, typ TokenType, scopes []string) *Token {
@@ -400,23 +423,26 @@ func (p *Provider) mintTokens(ctx context.Context, iss *resolvedIssuer, client *
 		t.CodeChallenge, t.CodeChallengeMethod = "", ""
 		t.CreatedAt = now
 		t.ConsumedAt = time.Time{}
+		t.AccessTokenClaims = nil
 		return &t
 	}
 
-	access := derive(accessToken, TokenTypeAccessToken, accessScopes)
-	access.ExpiresAt = now.Add(p.cfg.Lifetimes.AccessToken)
+	access := derive(accessToken, TokenTypeAccessToken, plan.scopes)
+	access.Audience = plan.audience
+	access.AccessTokenClaims = plan.accessClaims
+	access.ExpiresAt = at.ExpiresAt
 	toStore := []*Token{access}
 
-	if withRefresh {
+	if plan.refresh {
 		refreshToken := randomToken()
 		refresh := derive(refreshToken, TokenTypeRefreshToken, grant.Scopes)
-		refresh.ExpiresAt = now.Add(p.cfg.Lifetimes.RefreshToken)
+		refresh.ExpiresAt = now.Add(plan.refreshLifetime)
 		toStore = append(toStore, refresh)
 		resp.RefreshToken = refreshToken
 	}
 
 	if withIDToken && grant.Subject != "" {
-		idToken, err := p.issueIDToken(ctx, iss, client, access, nonce, accessToken)
+		idToken, err := p.issueIDToken(ctx, iss, client, access, nonce, accessToken, plan.idLifetime, plan.idClaims)
 		if err != nil {
 			return nil, errServer(err)
 		}
