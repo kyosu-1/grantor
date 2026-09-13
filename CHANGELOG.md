@@ -7,6 +7,8 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-14
+
 ### Added
 
 - Pushed authorization requests (RFC 9126): `Config.PAR`, `Client.RequirePushedAuthorizationRequests`, the PAR endpoint (`Provider.ServePushedAuthorization`, `ParsePushedAuthorizationRequest`, `PushAuthorizationRequest`, `WritePushedAuthorizationResponse`), `request_uri` at the authorization endpoint, discovery metadata, and `AuthorizationRequest.Pushed`.
@@ -32,5 +34,6 @@ First tagged release.
 - The `memory` storage and the `storagetest` suite for storage implementations.
 - The OpenID Foundation conformance plans Basic OP, Config OP and Form Post Basic OP, run in CI.
 
-[Unreleased]: https://github.com/kyosu-1/grantor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kyosu-1/grantor/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kyosu-1/grantor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kyosu-1/grantor/releases/tag/v0.1.0
