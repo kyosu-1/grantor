@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-// Error codes defined by RFC 6749, RFC 6750, RFC 7009 and OpenID Connect Core.
+// Error codes defined by RFC 6749, RFC 6750, RFC 7009, RFC 8707 and OpenID
+// Connect Core.
 const (
 	CodeInvalidRequest           = "invalid_request"
 	CodeInvalidClient            = "invalid_client"
@@ -29,6 +30,7 @@ const (
 	CodeInvalidRequestObject     = "invalid_request_object"
 	CodeRequestNotSupported      = "request_not_supported"
 	CodeRequestURINotSupported   = "request_uri_not_supported"
+	CodeInvalidTarget            = "invalid_target"
 )
 
 // Error is a protocol error that is sent to clients.

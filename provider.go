@@ -103,6 +103,14 @@ type Config struct {
 	// Endpoints configures the paths of the protocol endpoints.
 	Endpoints Endpoints
 
+	// AccessTokenFormat is the format of access tokens for clients that do not
+	// set Client.AccessTokenFormat. It defaults to AccessTokenFormatOpaque.
+	AccessTokenFormat AccessTokenFormat
+
+	// AccessTokenFormats adds custom access token formats, which clients and
+	// Config.BeforeIssue can select by name.
+	AccessTokenFormats map[AccessTokenFormat]AccessTokenEncoder
+
 	// Grants adds custom grant types to the token endpoint. Clients must list
 	// a grant type in Client.GrantTypes to use it. The built-in grant types
 	// cannot be redefined.
@@ -170,6 +178,19 @@ func New(cfg Config) (*Provider, error) {
 			return nil, fmt.Errorf("grantor: Config.Grants has no function for %s", gt)
 		}
 	}
+	for name, enc := range cfg.AccessTokenFormats {
+		switch {
+		case name == "":
+			return nil, errors.New("grantor: Config.AccessTokenFormats has an empty format name")
+		case name == AccessTokenFormatOpaque, name == AccessTokenFormatJWT:
+			return nil, fmt.Errorf("grantor: Config.AccessTokenFormats cannot redefine the %s format", name)
+		case enc == nil:
+			return nil, fmt.Errorf("grantor: Config.AccessTokenFormats has no encoder for %s", name)
+		}
+	}
+	if cfg.AccessTokenFormat == "" {
+		cfg.AccessTokenFormat = AccessTokenFormatOpaque
+	}
 	cfg.Endpoints.setDefaults()
 	if err := cfg.Endpoints.validate(); err != nil {
 		return nil, fmt.Errorf("grantor: %w", err)
@@ -186,6 +207,9 @@ func New(cfg Config) (*Provider, error) {
 		cfg.ErrorPage = defaultErrorPage
 	}
 	p := &Provider{cfg: cfg, now: time.Now}
+	if !p.knownFormat(cfg.AccessTokenFormat) {
+		return nil, fmt.Errorf("grantor: unknown Config.AccessTokenFormat %q", cfg.AccessTokenFormat)
+	}
 	if cfg.Issuer != nil {
 		iss, err := resolveIssuer(cfg.Issuer)
 		if err != nil {
@@ -301,6 +325,9 @@ func (p *Provider) client(ctx context.Context, iss *resolvedIssuer, id string) (
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
+	if c.AccessTokenFormat != "" && !p.knownFormat(c.AccessTokenFormat) {
+		return nil, fmt.Errorf("client %q has the unknown access token format %q", c.ID, c.AccessTokenFormat)
+	}
 	for _, gt := range c.grantTypes() {
 		switch gt {
 		case GrantTypeAuthorizationCode, GrantTypeRefreshToken, GrantTypeClientCredentials:
@@ -311,6 +338,16 @@ func (p *Provider) client(ctx context.Context, iss *resolvedIssuer, id string) (
 		}
 	}
 	return c, nil
+}
+
+// knownFormat reports whether f is a built-in or configured access token
+// format.
+func (p *Provider) knownFormat(f AccessTokenFormat) bool {
+	if f == AccessTokenFormatOpaque || f == AccessTokenFormatJWT {
+		return true
+	}
+	_, ok := p.cfg.AccessTokenFormats[f]
+	return ok
 }
 
 func (p *Provider) logError(ctx context.Context, msg string, err error) {

@@ -32,6 +32,8 @@ type Grant struct {
 	// RefreshToken also issues a refresh token. The client must be allowed
 	// the refresh_token grant.
 	RefreshToken bool
+	// Audience must be a subset of Client.Audience; nil means all of it.
+	Audience []string
 }
 
 // Issuance describes tokens that are about to be issued. It is passed to
@@ -98,7 +100,12 @@ func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, g Grant) (
 	if g.RefreshToken && !client.allowsGrant(GrantTypeRefreshToken) {
 		return nil, errServer(fmt.Errorf("IssueTokens: client %q may not use refresh tokens", client.ID))
 	}
+	audience, err := resolveAudience(client.Audience, g.Audience)
+	if err != nil {
+		return nil, newError(CodeInvalidTarget, "the audience is not registered for the client")
+	}
 	grant := &Token{
+		Audience: audience,
 		GrantID:  randomToken(),
 		Issuer:   req.iss.url,
 		ClientID: client.ID,

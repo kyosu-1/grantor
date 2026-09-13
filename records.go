@@ -138,6 +138,12 @@ type Token struct {
 	AMR      []string       `json:"amr,omitempty"`
 	Claims   *ClaimsRequest `json:"claims,omitempty"`
 
+	// Audience lists the intended recipients of access tokens of the grant.
+	Audience []string `json:"audience,omitempty"`
+	// AccessTokenClaims are extra claims of an access token, set by
+	// Config.BeforeIssue.
+	AccessTokenClaims map[string]any `json:"access_token_claims,omitempty"`
+
 	// Fields used by authorization codes only.
 	RedirectURI          string `json:"redirect_uri,omitempty"`
 	RedirectURIInRequest bool   `json:"redirect_uri_in_request,omitempty"`

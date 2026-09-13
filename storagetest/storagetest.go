@@ -102,6 +102,8 @@ func fullToken(typ grantor.TokenType, grantID string) *grantor.Token {
 		ACR:                  "urn:acr:1",
 		AMR:                  []string{"pwd", "otp"},
 		Claims:               &grantor.ClaimsRequest{UserInfo: map[string]*grantor.ClaimRequest{"email": nil}},
+		Audience:             []string{"https://api.example.com", "https://other.example.com"},
+		AccessTokenClaims:    map[string]any{"tenant": "acme", "admin": true},
 		RedirectURI:          "https://client.example.com/cb",
 		RedirectURIInRequest: true,
 		Nonce:                "nonce-value",

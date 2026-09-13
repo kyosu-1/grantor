@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 )
 
 // AuthMethod is a token endpoint client authentication method
@@ -32,6 +33,18 @@ const (
 	GrantTypeAuthorizationCode GrantType = "authorization_code"
 	GrantTypeRefreshToken      GrantType = "refresh_token"
 	GrantTypeClientCredentials GrantType = "client_credentials"
+)
+
+// AccessTokenFormat names how access token values are encoded.
+type AccessTokenFormat string
+
+const (
+	// AccessTokenFormatOpaque issues random 43-character access tokens. It is
+	// the default.
+	AccessTokenFormatOpaque AccessTokenFormat = "opaque"
+	// AccessTokenFormatJWT issues JWT access tokens (RFC 9068), which
+	// resource servers can validate with the issuer's JWKS.
+	AccessTokenFormatJWT AccessTokenFormat = "jwt"
 )
 
 // PKCEPolicy controls when a client must use PKCE.
@@ -100,6 +113,26 @@ type Client struct {
 	// clients, as a resource server does. Every client can introspect its own
 	// tokens.
 	AllowIntrospection bool
+
+	// AccessTokenFormat is the format of access tokens issued to the client.
+	// It defaults to Config.AccessTokenFormat.
+	AccessTokenFormat AccessTokenFormat
+
+	// AccessTokenSigningAlg is the JWS algorithm of JWT access tokens and of
+	// the SignFunc passed to custom formats. It defaults to RS256.
+	AccessTokenSigningAlg string
+
+	// Audience lists the audiences, such as resource server URLs, that
+	// access tokens of the client may be issued for. Unless an approval, a
+	// custom grant or Config.BeforeIssue narrows it, tokens are issued for
+	// all of them. JWT access tokens without an audience use the client ID.
+	Audience []string
+
+	// Lifetimes of tokens issued to the client. Zero values use
+	// Config.Lifetimes.
+	AccessTokenLifetime  time.Duration
+	RefreshTokenLifetime time.Duration
+	IDTokenLifetime      time.Duration
 }
 
 // HashSecret returns the value to store in [Client.SecretHash].
@@ -151,6 +184,13 @@ func (c *Client) allowsGrant(g GrantType) bool {
 	return slices.Contains(c.grantTypes(), g)
 }
 
+func (c *Client) accessTokenAlg() string {
+	if c.AccessTokenSigningAlg == "" {
+		return "RS256"
+	}
+	return c.AccessTokenSigningAlg
+}
+
 func (c *Client) idTokenAlg() string {
 	if c.IDTokenSigningAlg == "" {
 		return "RS256"
@@ -189,6 +229,9 @@ func (c *Client) validate() error {
 		}
 	default:
 		return fmt.Errorf("client %q has unsupported auth method %q", c.ID, m)
+	}
+	if c.AccessTokenLifetime < 0 || c.RefreshTokenLifetime < 0 || c.IDTokenLifetime < 0 {
+		return fmt.Errorf("client %q has a negative token lifetime", c.ID)
 	}
 	switch c.PKCE {
 	case "", PKCERequired:

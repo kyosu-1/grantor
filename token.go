@@ -276,7 +276,7 @@ func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequ
 	if slices.Contains(scopes, "openid") || slices.Contains(scopes, "offline_access") {
 		return nil, newError(CodeInvalidScope, "the client credentials grant has no end-user")
 	}
-	grant := &Token{GrantID: randomToken(), Issuer: iss.url, ClientID: client.ID, Scopes: scopes}
+	grant := &Token{GrantID: randomToken(), Issuer: iss.url, ClientID: client.ID, Scopes: scopes, Audience: slices.Clone(client.Audience)}
 	return p.issueTokens(ctx, iss, client, grant, scopes, false, req.GrantType)
 }
 

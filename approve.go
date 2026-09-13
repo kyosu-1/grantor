@@ -51,6 +51,10 @@ type Approval struct {
 	// [ClaimsRequest.Names]. Claims granted through Scopes need not be
 	// listed.
 	Claims []string
+
+	// Audience lists the audiences access tokens of the grant are issued for.
+	// It must be a subset of Client.Audience; nil means all of it.
+	Audience []string
 }
 
 // AuthorizationRequest returns the saved authorization request with the
@@ -119,11 +123,15 @@ func bindingFromResponse(w http.ResponseWriter, name string) string {
 // the approval is not acceptable, for example because the end-user must
 // authenticate again; see [AuthorizationRequest.NeedsAuthentication].
 func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest, a Approval) error {
-	iss, req, err := p.completable(w, r, req, true)
+	iss, client, req, err := p.completable(w, r, req, true)
 	if err != nil {
 		return err
 	}
 	scopes, claims, err := p.validateApproval(req, &a)
+	if err != nil {
+		return err
+	}
+	audience, err := resolveAudience(client.Audience, a.Audience)
 	if err != nil {
 		return err
 	}
@@ -147,6 +155,7 @@ func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, req *Authoriz
 		ACR:                  a.ACR,
 		AMR:                  a.AMR,
 		Claims:               claims,
+		Audience:             audience,
 		RedirectURI:          req.RedirectURI,
 		RedirectURIInRequest: req.RedirectURIInRequest,
 		Nonce:                req.Nonce,
@@ -181,7 +190,7 @@ func (p *Provider) Deny(w http.ResponseWriter, r *http.Request, req *Authorizati
 	if !validErrorCode(reason.Code) {
 		return fmt.Errorf("grantor: %q is not a valid error code", reason.Code)
 	}
-	iss, req, err := p.completable(w, r, req, false)
+	iss, _, req, err := p.completable(w, r, req, false)
 	if err != nil {
 		return err
 	}
@@ -199,47 +208,65 @@ func (p *Provider) Deny(w http.ResponseWriter, r *http.Request, req *Authorizati
 // request, or a copy of an unsaved one. Either way it is validated again
 // against the client registration: fully for an approval, and for a denial
 // only as far as needed to deliver the error safely.
-func (p *Provider) completable(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest, approval bool) (*resolvedIssuer, *AuthorizationRequest, error) {
+func (p *Provider) completable(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest, approval bool) (*resolvedIssuer, *Client, *AuthorizationRequest, error) {
 	if req == nil {
-		return nil, nil, ErrAuthorizationRequestNotFound
+		return nil, nil, nil, ErrAuthorizationRequestNotFound
 	}
 	iss, err := p.issuerFor(r)
 	if err != nil {
-		return nil, nil, fmt.Errorf("grantor: resolve issuer: %w", err)
+		return nil, nil, nil, fmt.Errorf("grantor: resolve issuer: %w", err)
 	}
 	var current *AuthorizationRequest
 	if req.ID != "" {
 		stored, err := p.loadPending(w, r, iss, req.ID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if !sameProtocolFields(stored, req) {
-			return nil, nil, ErrAuthorizationRequestModified
+			return nil, nil, nil, ErrAuthorizationRequestModified
 		}
 		current = stored
 	} else {
 		if !req.parsed {
-			return nil, nil, errors.New("grantor: an unsaved authorization request must come from ParseAuthorizationRequest")
+			return nil, nil, nil, errors.New("grantor: an unsaved authorization request must come from ParseAuthorizationRequest")
 		}
 		copied := *req
 		current = &copied
 		if !p.now().Before(current.ExpiresAt) {
-			return nil, nil, ErrAuthorizationRequestNotFound
+			return nil, nil, nil, ErrAuthorizationRequestNotFound
 		}
 	}
 	client, err := p.client(r.Context(), iss, current.ClientID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("grantor: look up client: %w", err)
+		return nil, nil, nil, fmt.Errorf("grantor: look up client: %w", err)
 	}
 	check := p.checkRequest
 	if !approval {
 		check = p.checkDelivery
 	}
 	if err := check(iss, client, current); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	current.Claims = p.claimsForClient(client, current.Claims)
-	return iss, current, nil
+	return iss, client, current, nil
+}
+
+// resolveAudience returns the requested audiences, which must all be
+// allowed, or all allowed audiences when requested is nil.
+func resolveAudience(allowed, requested []string) ([]string, error) {
+	if requested == nil {
+		return slices.Clone(allowed), nil
+	}
+	out := []string{}
+	for _, a := range requested {
+		if !slices.Contains(allowed, a) {
+			return nil, fmt.Errorf("grantor: audience %q is not registered for the client", a)
+		}
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 func invalidRequest(reason string) error {
