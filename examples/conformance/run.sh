@@ -32,8 +32,9 @@ provider=$!
 trap 'kill "$provider" 2>/dev/null || true' EXIT
 
 echo "waiting for the provider and the conformance suite..."
-curl -sk --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null https://localhost:9443/.well-known/openid-configuration
-curl -sk --retry 120 --retry-connrefused --retry-all-errors --retry-delay 2 -o /dev/null https://localhost.emobix.co.uk:8443/api/runner/available
+# Retrying curl truncates its output file, which fails for /dev/null on Linux.
+curl -sSk --retry 30 --retry-connrefused --retry-delay 1 -o "$work/probe" https://localhost:9443/.well-known/openid-configuration
+curl -sSk --retry 120 --retry-connrefused --retry-all-errors --retry-delay 2 -o "$work/probe" https://localhost.emobix.co.uk:8443/api/runner/available
 
 mkdir -p "$work/results"
 cd "$suite/scripts"
