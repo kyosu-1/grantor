@@ -580,6 +580,9 @@ func (p *Provider) writeAuthorizationError(w http.ResponseWriter, r *http.Reques
 	if e.Description != "" {
 		v.Set("error_description", sanitizeDescription(e.Description))
 	}
+	if e.URI != "" {
+		v.Set("error_uri", sanitizeURI(e.URI))
+	}
 	p.writeAuthorizationResponse(w, r, iss, target, v)
 }
 

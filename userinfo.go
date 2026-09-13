@@ -66,7 +66,7 @@ func bearerToken(w http.ResponseWriter, r *http.Request) (string, *Error) {
 		case !strings.EqualFold(scheme, "Bearer"):
 			// RFC 6750 section 3.1: other authentication schemes get no
 			// error code.
-			return "", &Error{status: http.StatusUnauthorized}
+			return "", &Error{StatusCode: http.StatusUnauthorized}
 		case value == "":
 			return "", errInvalidRequest("malformed Authorization header")
 		}
@@ -86,7 +86,7 @@ func bearerToken(w http.ResponseWriter, r *http.Request) (string, *Error) {
 	switch len(tokens) {
 	case 0:
 		// RFC 6750 section 3.1: no error code when no credentials were sent.
-		return "", &Error{status: http.StatusUnauthorized}
+		return "", &Error{StatusCode: http.StatusUnauthorized}
 	case 1:
 		return tokens[0], nil
 	default:
@@ -107,6 +107,9 @@ func (p *Provider) writeBearerError(w http.ResponseWriter, r *http.Request, e *E
 		challenge += fmt.Sprintf(`, error=%q`, e.Code)
 		if e.Description != "" {
 			challenge += fmt.Sprintf(`, error_description=%q`, sanitizeDescription(e.Description))
+		}
+		if e.URI != "" {
+			challenge += fmt.Sprintf(`, error_uri=%q`, sanitizeURI(e.URI))
 		}
 	}
 	w.Header().Set("WWW-Authenticate", challenge)

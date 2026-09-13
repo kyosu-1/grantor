@@ -39,9 +39,15 @@ const (
 type Error struct {
 	Code        string
 	Description string
+	// URI identifies a web page with information about the error. It is
+	// sent as error_uri.
+	URI string
+	// StatusCode is the HTTP status of JSON error responses, such as those
+	// of the token endpoint. Zero selects the status RFC 6749 and RFC 6750
+	// define for Code.
+	StatusCode int
 
-	status int
-	cause  error
+	cause error
 }
 
 // Sentinel errors an application passes to [Provider.Deny]. They compare
@@ -73,8 +79,8 @@ func (e *Error) Is(target error) bool {
 
 // statusCode returns the HTTP status for a token-style JSON error response.
 func (e *Error) statusCode() int {
-	if e.status != 0 {
-		return e.status
+	if e.StatusCode != 0 {
+		return e.StatusCode
 	}
 	switch e.Code {
 	case CodeInvalidClient, CodeInvalidToken:
@@ -119,6 +125,31 @@ func asProtocolError(err error) *Error {
 		return e
 	}
 	return errServer(err)
+}
+
+// validErrorCode reports whether code only uses the characters RFC 6749
+// allows in error codes (%x20-21 / %x23-5B / %x5D-7E).
+func validErrorCode(code string) bool {
+	if code == "" {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if c := code[i]; c < 0x20 || c > 0x7e || c == '"' || c == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeURI removes characters RFC 6749 does not allow in error_uri
+// (%x21 / %x23-5B / %x5D-7E).
+func sanitizeURI(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r <= 0x20 || r > 0x7e || r == '"' || r == '\\' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // sanitizeDescription removes characters that RFC 6749 section 5.2 does not

@@ -98,6 +98,9 @@ func (p *Provider) writeTokenError(w http.ResponseWriter, r *http.Request, err e
 	if e.Description != "" {
 		body["error_description"] = sanitizeDescription(e.Description)
 	}
+	if e.URI != "" {
+		body["error_uri"] = sanitizeURI(e.URI)
+	}
 	noStore(w)
 	if e.Code == CodeInvalidClient && strings.HasPrefix(r.Header.Get("Authorization"), "Basic ") {
 		w.Header().Set("WWW-Authenticate", `Basic realm="token"`)
