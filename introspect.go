@@ -55,12 +55,27 @@ func (p *Provider) serveIntrospection(w http.ResponseWriter, r *http.Request, is
 		return
 	}
 
-	resp := map[string]any{
+	resp := map[string]any{}
+	for name, value := range t.AccessTokenClaims {
+		if !accessTokenProtectedClaims[name] {
+			resp[name] = value
+		}
+	}
+	switch len(t.Audience) {
+	case 0:
+	case 1:
+		resp["aud"] = t.Audience[0]
+	default:
+		resp["aud"] = t.Audience
+	}
+	for name, value := range map[string]any{
 		"active":    true,
 		"client_id": t.ClientID,
 		"iss":       t.Issuer,
 		"iat":       t.CreatedAt.Unix(),
 		"exp":       t.ExpiresAt.Unix(),
+	} {
+		resp[name] = value
 	}
 	if len(t.Scopes) > 0 {
 		resp["scope"] = strings.Join(t.Scopes, " ")

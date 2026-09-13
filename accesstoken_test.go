@@ -2,6 +2,7 @@ package grantor_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -271,5 +272,71 @@ func TestIssuanceValidation(t *testing.T) {
 			status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic(serviceClient, confidentialSecret))
 			expectError(t, status, body, http.StatusInternalServerError, "server_error")
 		})
+	}
+}
+
+func TestIntrospectionAudienceAndClaims(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	e.store.SetClient(testIssuer, grantor.Client{
+		ID: "api-client", SecretHash: grantor.HashSecret(confidentialSecret), RedirectURIs: []string{clientRedirect},
+		GrantTypes: []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
+		Scopes:     []string{"openid", "api", "offline_access"}, Audience: []string{"https://a.example.com", "https://b.example.com"},
+		PKCE: grantor.PKCEOptional,
+	})
+	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
+			is.AccessTokenClaims = map[string]any{"tenant": "acme"}
+			return nil
+		}
+	})
+	req := e.startAuthorization(authParams("api-client", "openid api offline_access", pkcePair{}))
+	rec, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), Audience: []string{"https://a.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := e.exchangeCode("api-client", redirectParams(t, rec).Get("code"), "", basic("api-client", confidentialSecret))
+	if status != http.StatusOK {
+		t.Fatalf("exchange = %d %v", status, body)
+	}
+	info := e.introspect(body["access_token"].(string), "api-client")
+	if info["aud"] != "https://a.example.com" || info["tenant"] != "acme" {
+		t.Fatalf("access token introspection = %v", info)
+	}
+	if info := e.introspect(body["refresh_token"].(string), "api-client"); info["aud"] != "https://a.example.com" || info["tenant"] != nil {
+		t.Fatalf("refresh token introspection = %v", info)
+	}
+	// Tokens without an audience keep returning no aud.
+	cc := e.tokensFor(confidentialClient, "openid")
+	if info := e.introspect(cc["access_token"].(string), confidentialClient); info["aud"] != nil {
+		t.Fatalf("introspection without audience = %v", info)
+	}
+}
+
+func TestValidateAccessToken(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	body := e.tokensFor(confidentialClient, "openid offline_access")
+	r := httpGet(testIssuer + "/api")
+	got, err := e.p.ValidateAccessToken(r, body["access_token"].(string))
+	if err != nil || got.Subject != "alice" || got.Type != grantor.TokenTypeAccessToken {
+		t.Fatalf("ValidateAccessToken = %+v, %v", got, err)
+	}
+	if _, err := e.p.ValidateAccessToken(r, body["refresh_token"].(string)); !errors.Is(err, grantor.ErrNotFound) {
+		t.Fatalf("refresh token = %v", err)
+	}
+	if _, err := e.p.ValidateAccessToken(r, "unknown"); !errors.Is(err, grantor.ErrNotFound) {
+		t.Fatalf("unknown token = %v", err)
+	}
+	other := e.tokensFor(confidentialClient, "openid")
+	if rec := e.postForm(grantor.PathRevocation, url.Values{"token": {other["access_token"].(string)}}, basic(confidentialClient, confidentialSecret)); rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d", rec.Code)
+	}
+	if _, err := e.p.ValidateAccessToken(r, other["access_token"].(string)); !errors.Is(err, grantor.ErrNotFound) {
+		t.Fatalf("revoked token = %v", err)
+	}
+	e.clock.Advance(2 * time.Hour)
+	if _, err := e.p.ValidateAccessToken(r, body["access_token"].(string)); !errors.Is(err, grantor.ErrNotFound) {
+		t.Fatalf("expired token = %v", err)
 	}
 }
