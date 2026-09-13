@@ -615,7 +615,7 @@ func TestValidateAccessTokenOfOtherIssuer(t *testing.T) {
 			if iss, ok := issuers[r.Host]; ok {
 				return iss, nil
 			}
-			return nil, errors.New("unknown host")
+			return nil, grantor.ErrNotFound
 		},
 		Clients: store,
 		Storage: store,

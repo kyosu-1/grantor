@@ -71,8 +71,10 @@ type Config struct {
 
 	// IssuerFor returns the issuer a request belongs to, for providers that
 	// serve many issuers. It must only return issuers the application
-	// controls, for example by looking up the Host header in a fixed table;
-	// returning an error rejects the request with 404.
+	// controls, for example by looking up the Host header in a fixed table.
+	// Return an error wrapping ErrNotFound for requests that belong to no
+	// issuer, which are rejected with 404. Any other error, and an issuer
+	// whose configuration is invalid, is logged and rejected with 500.
 	IssuerFor func(r *http.Request) (*Issuer, error)
 
 	// Clients looks up registered clients.
@@ -270,9 +272,22 @@ func (p *Provider) issuerFor(r *http.Request) (*resolvedIssuer, error) {
 		return nil, err
 	}
 	if cfg == nil {
-		return nil, errors.New("IssuerFor returned no issuer")
+		return nil, errors.New("IssuerFor returned neither an issuer nor an error")
 	}
-	return resolveIssuer(cfg)
+	iss, err := resolveIssuer(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("IssuerFor returned an invalid issuer: %w", err)
+	}
+	return iss, nil
+}
+
+// issuerError converts an error from issuerFor into the protocol error for
+// the client: 404 for unknown issuers, server_error for everything else.
+func issuerError(err error) *Error {
+	if errors.Is(err, ErrNotFound) {
+		return &Error{Code: CodeInvalidRequest, Description: "unknown issuer", StatusCode: http.StatusNotFound, cause: err}
+	}
+	return errServer(fmt.Errorf("resolve issuer: %w", err))
 }
 
 // ServeHTTP routes requests to the protocol endpoints of the issuer the

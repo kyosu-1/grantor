@@ -79,7 +79,7 @@ func (e *authorizationError) Unwrap() error { return e.err }
 func (p *Provider) ParseAuthorizationRequest(r *http.Request) (*AuthorizationRequest, error) {
 	iss, err := p.issuerFor(r)
 	if err != nil {
-		return nil, &Error{Code: CodeInvalidRequest, Description: "unknown issuer", StatusCode: http.StatusNotFound, cause: err}
+		return nil, issuerError(err)
 	}
 	return p.parseAuthorization(r, iss)
 }

@@ -225,7 +225,7 @@ The suite checks round-tripping of every field, conflict and not-found semantics
 
 ## Multiple issuers
 
-Set `Config.IssuerFor` instead of `Config.Issuer` to resolve the issuer from each request, for example from the Host header or a path prefix. Clients are looked up per issuer, and tokens and authorization requests are only accepted by the issuer that created them.
+Set `Config.IssuerFor` instead of `Config.Issuer` to resolve the issuer from each request, for example from the Host header or a path prefix. Return an error wrapping `grantor.ErrNotFound` for requests that belong to no issuer, which get 404; other errors, such as a failed tenant lookup, are logged and answered with 500. Clients are looked up per issuer, and tokens and authorization requests are only accepted by the issuer that created them.
 
 ## Conformance
 

@@ -528,7 +528,7 @@ func TestMultipleIssuers(t *testing.T) {
 			if iss, ok := issuers[r.Host]; ok {
 				return iss, nil
 			}
-			return nil, fmt.Errorf("unknown host %q", r.Host)
+			return nil, fmt.Errorf("unknown host %q: %w", r.Host, grantor.ErrNotFound)
 		},
 		Clients: store,
 		Storage: store,

@@ -57,10 +57,16 @@ func (e *Endpoints) validate() error {
 
 var errNoInteract = errors.New("Config.Interact is not set")
 
-// withIssuer resolves the issuer of r and calls fn, or responds with 404.
+// withIssuer resolves the issuer of r and calls fn. Requests for unknown
+// issuers get 404; failures to resolve an issuer are logged and get 500.
 func (p *Provider) withIssuer(w http.ResponseWriter, r *http.Request, fn func(http.ResponseWriter, *http.Request, *resolvedIssuer)) {
 	iss, err := p.issuerFor(r)
 	if err != nil {
+		if perr := issuerError(err); perr.Code == CodeServerError {
+			p.logError(r.Context(), "resolve issuer", perr)
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
 		p.cfg.Logger.DebugContext(r.Context(), "grantor: no issuer for request", "path", r.URL.Path, "error", err)
 		http.NotFound(w, r)
 		return

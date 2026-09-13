@@ -50,7 +50,7 @@ type TokenResponse struct {
 func (p *Provider) ParseTokenRequest(r *http.Request) (*TokenRequest, error) {
 	iss, err := p.issuerFor(r)
 	if err != nil {
-		return nil, &Error{Code: CodeInvalidRequest, Description: "unknown issuer", StatusCode: http.StatusNotFound, cause: err}
+		return nil, issuerError(err)
 	}
 	req, perr := p.parseToken(nil, r, iss)
 	if perr != nil {
