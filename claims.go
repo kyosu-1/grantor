@@ -1,0 +1,125 @@
+package grantor
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+)
+
+// standardScopeClaims is the scope to claims mapping of OpenID Connect Core
+// section 5.4.
+var standardScopeClaims = map[string][]string{
+	"profile": {
+		"name", "family_name", "given_name", "middle_name", "nickname",
+		"preferred_username", "profile", "picture", "website", "gender",
+		"birthdate", "zoneinfo", "locale", "updated_at",
+	},
+	"email":   {"email", "email_verified"},
+	"address": {"address"},
+	"phone":   {"phone_number", "phone_number_verified"},
+}
+
+// protocolClaims are set by the provider and never taken from ClaimsFunc.
+var protocolClaims = map[string]bool{
+	"iss": true, "sub": true, "aud": true, "exp": true, "iat": true,
+	"nbf": true, "jti": true, "auth_time": true, "nonce": true, "acr": true,
+	"amr": true, "azp": true, "at_hash": true, "c_hash": true, "sid": true,
+	"client_id": true, "scope": true, "cnf": true,
+}
+
+func (p *Provider) scopeClaims(scope string) []string {
+	if c, ok := p.cfg.ScopeClaims[scope]; ok {
+		return c
+	}
+	return standardScopeClaims[scope]
+}
+
+// supportedClaims lists every claim name the provider can return, for the
+// discovery document.
+func (p *Provider) supportedClaims() []string {
+	set := map[string]bool{
+		"sub": true, "iss": true, "aud": true, "exp": true, "iat": true,
+		"auth_time": true, "nonce": true, "acr": true, "amr": true, "at_hash": true,
+	}
+	for _, claims := range standardScopeClaims {
+		for _, c := range claims {
+			set[c] = true
+		}
+	}
+	for _, claims := range p.cfg.ScopeClaims {
+		for _, c := range claims {
+			set[c] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(set))
+}
+
+func (p *Provider) supportedScopes() []string {
+	set := map[string]bool{"openid": true, "offline_access": true}
+	for s := range standardScopeClaims {
+		set[s] = true
+	}
+	for s := range p.cfg.ScopeClaims {
+		set[s] = true
+	}
+	return slices.Sorted(maps.Keys(set))
+}
+
+// allowedClaims returns the names of the end-user claims a grant may
+// receive: those granted through scopes (when includeScopes is set) and
+// those requested individually with the claims parameter.
+func (p *Provider) allowedClaims(grant *Token, requested map[string]*ClaimRequest, includeScopes bool) map[string]bool {
+	allowed := map[string]bool{}
+	if includeScopes {
+		for _, scope := range grant.Scopes {
+			for _, c := range p.scopeClaims(scope) {
+				allowed[c] = true
+			}
+		}
+	}
+	for name := range requested {
+		allowed[name] = true
+	}
+	return allowed
+}
+
+// endUserClaims returns the filtered end-user claims for a grant.
+func (p *Provider) endUserClaims(ctx context.Context, grant *Token, allowed map[string]bool) (map[string]any, error) {
+	out := map[string]any{}
+	if p.cfg.Claims == nil || len(allowed) == 0 {
+		return out, nil
+	}
+	g := *grant
+	all, err := p.cfg.Claims(ctx, &g)
+	if err != nil {
+		return nil, fmt.Errorf("claims func: %w", err)
+	}
+	for name, value := range all {
+		if allowed[name] && !protocolClaims[name] && value != nil {
+			out[name] = value
+		}
+	}
+	return out, nil
+}
+
+// requestedEssentialACR returns the acr values requested as essential through the
+// claims parameter, if any.
+func requestedEssentialACR(c *ClaimsRequest) (values []string, essential bool) {
+	if c == nil {
+		return nil, false
+	}
+	req, ok := c.IDToken["acr"]
+	if !ok || req == nil || !req.Essential {
+		return nil, false
+	}
+	if s, ok := req.Value.(string); ok {
+		values = append(values, s)
+	}
+	for _, v := range req.Values {
+		if s, ok := v.(string); ok {
+			values = append(values, s)
+		}
+	}
+	return values, true
+}

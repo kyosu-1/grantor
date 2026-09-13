@@ -1,0 +1,294 @@
+package grantor
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// Endpoint paths, relative to the issuer URL.
+const (
+	PathAuthorization = "/authorize"
+	PathToken         = "/token"
+	PathUserInfo      = "/userinfo"
+	PathIntrospection = "/introspect"
+	PathRevocation    = "/revoke"
+	PathJWKS          = "/jwks"
+	PathOpenIDConfig  = "/.well-known/openid-configuration"
+)
+
+// pathOAuthMetadata is the RFC 8414 metadata path. For issuers with a path
+// component, the issuer path is appended to it rather than prepended.
+const pathOAuthMetadata = "/.well-known/oauth-authorization-server"
+
+// Issuer is the configuration of a single issuer (tenant).
+type Issuer struct {
+	// URL is the issuer identifier. It must be an https URL without query or
+	// fragment; http is accepted only for loopback hosts, for development.
+	// Endpoints are served below it, for example URL + "/token".
+	URL string
+
+	// Keys signs ID tokens. Every key is published in the JWKS. For each
+	// algorithm, the first key with that algorithm signs new tokens, so a key
+	// can be rotated by putting the new key before the old one and removing
+	// the old key once tokens signed with it have expired.
+	Keys []SigningKey
+}
+
+// Lifetimes configures how long issued artifacts stay valid. Zero values use
+// the defaults.
+type Lifetimes struct {
+	AuthorizationRequest time.Duration // default 15 minutes
+	AuthorizationCode    time.Duration // default 1 minute
+	AccessToken          time.Duration // default 1 hour
+	RefreshToken         time.Duration // default 30 days
+	IDToken              time.Duration // default 1 hour
+}
+
+// InteractionFunc handles a validated authorization request that needs the
+// application: it authenticates the end-user and obtains consent, usually
+// by redirecting to a login page, and eventually calls [Provider.Approve] or
+// [Provider.Deny] with req.ID.
+type InteractionFunc func(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest)
+
+// ClaimsFunc returns the claims the application holds about the end-user of
+// a grant. The provider filters them down to what the client is authorized
+// to receive, based on the granted scopes and the claims request parameter.
+// Protocol claims such as iss, aud and exp in the result are ignored.
+type ClaimsFunc func(ctx context.Context, grant *Token) (map[string]any, error)
+
+// Config configures a [Provider].
+type Config struct {
+	// Issuer is the issuer of a single-tenant provider. Exactly one of Issuer
+	// and IssuerFor must be set.
+	Issuer *Issuer
+
+	// IssuerFor returns the issuer a request belongs to, for providers that
+	// serve many issuers. It must only return issuers the application
+	// controls, for example by looking up the Host header in a fixed table;
+	// returning an error rejects the request with 404.
+	IssuerFor func(r *http.Request) (*Issuer, error)
+
+	// Clients looks up registered clients.
+	Clients ClientStore
+
+	// Storage persists authorization requests and tokens.
+	Storage Storage
+
+	// Interact is called for every valid authorization request.
+	Interact InteractionFunc
+
+	// Claims provides end-user claims for ID tokens and the UserInfo endpoint.
+	// If nil, only the sub claim is returned.
+	Claims ClaimsFunc
+
+	// ScopeClaims maps additional scopes to the claims they grant access to,
+	// on top of the standard profile, email, address and phone scopes.
+	ScopeClaims map[string][]string
+
+	// IDTokenScopeClaims also puts claims granted through scopes into the ID
+	// token. By default they are only returned from the UserInfo endpoint,
+	// as OpenID Connect Core section 5.4 specifies for the code flow.
+	IDTokenScopeClaims bool
+
+	Lifetimes Lifetimes
+
+	// DisableInteractionBinding stops binding authorization requests to the
+	// user agent with a cookie. Only disable it when the login pages run on
+	// a different site than the provider.
+	DisableInteractionBinding bool
+
+	// ErrorPage renders errors that cannot be redirected to the client,
+	// such as an unknown client or an invalid redirect_uri. The default
+	// writes a plain-text response.
+	ErrorPage func(w http.ResponseWriter, r *http.Request, err *Error)
+
+	// Logger receives internal errors. It defaults to slog.Default().
+	Logger *slog.Logger
+}
+
+// Provider is an OAuth 2.0 authorization server and OpenID Provider.
+// It is an http.Handler serving all protocol endpoints.
+type Provider struct {
+	cfg    Config
+	static *resolvedIssuer
+	now    func() time.Time
+}
+
+// resolvedIssuer is an Issuer whose configuration has been validated.
+type resolvedIssuer struct {
+	url      string
+	basePath string
+	secure   bool
+	keys     *keySet
+}
+
+// New validates cfg and returns a Provider.
+func New(cfg Config) (*Provider, error) {
+	if (cfg.Issuer == nil) == (cfg.IssuerFor == nil) {
+		return nil, errors.New("grantor: exactly one of Config.Issuer and Config.IssuerFor must be set")
+	}
+	if cfg.Clients == nil {
+		return nil, errors.New("grantor: Config.Clients is required")
+	}
+	if cfg.Storage == nil {
+		return nil, errors.New("grantor: Config.Storage is required")
+	}
+	if cfg.Interact == nil {
+		return nil, errors.New("grantor: Config.Interact is required")
+	}
+	for scope := range cfg.ScopeClaims {
+		if scope == "openid" || scope == "offline_access" {
+			return nil, fmt.Errorf("grantor: Config.ScopeClaims cannot redefine the %q scope", scope)
+		}
+	}
+	setDefault(&cfg.Lifetimes.AuthorizationRequest, 15*time.Minute)
+	setDefault(&cfg.Lifetimes.AuthorizationCode, time.Minute)
+	setDefault(&cfg.Lifetimes.AccessToken, time.Hour)
+	setDefault(&cfg.Lifetimes.RefreshToken, 30*24*time.Hour)
+	setDefault(&cfg.Lifetimes.IDToken, time.Hour)
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if cfg.ErrorPage == nil {
+		cfg.ErrorPage = defaultErrorPage
+	}
+	p := &Provider{cfg: cfg, now: time.Now}
+	if cfg.Issuer != nil {
+		iss, err := resolveIssuer(cfg.Issuer)
+		if err != nil {
+			return nil, fmt.Errorf("grantor: %w", err)
+		}
+		p.static = iss
+	}
+	return p, nil
+}
+
+func setDefault(d *time.Duration, v time.Duration) {
+	if *d <= 0 {
+		*d = v
+	}
+}
+
+func resolveIssuer(iss *Issuer) (*resolvedIssuer, error) {
+	u, err := url.Parse(iss.URL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid issuer URL %q: %w", iss.URL, err)
+	}
+	switch {
+	case u.Scheme == "https":
+	case u.Scheme == "http" && (isLoopbackIP(u.Hostname()) || u.Hostname() == "localhost"):
+	default:
+		return nil, fmt.Errorf("issuer URL %q must use https", iss.URL)
+	}
+	if u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil || strings.HasSuffix(iss.URL, "/") {
+		return nil, fmt.Errorf("issuer URL %q must have a host, no query, fragment or user info, and no trailing slash", iss.URL)
+	}
+	keys, err := newKeySet(iss.Keys)
+	if err != nil {
+		return nil, fmt.Errorf("issuer %q: %w", iss.URL, err)
+	}
+	return &resolvedIssuer{
+		url:      iss.URL,
+		basePath: u.EscapedPath(),
+		secure:   u.Scheme == "https",
+		keys:     keys,
+	}, nil
+}
+
+func (iss *resolvedIssuer) endpoint(path string) string { return iss.url + path }
+
+func (p *Provider) issuerFor(r *http.Request) (*resolvedIssuer, error) {
+	if p.static != nil {
+		return p.static, nil
+	}
+	cfg, err := p.cfg.IssuerFor(r)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, errors.New("IssuerFor returned no issuer")
+	}
+	return resolveIssuer(cfg)
+}
+
+// ServeHTTP routes requests to the protocol endpoints of the issuer the
+// request belongs to.
+func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	iss, err := p.issuerFor(r)
+	if err != nil {
+		p.cfg.Logger.DebugContext(r.Context(), "grantor: no issuer for request", "path", r.URL.Path, "error", err)
+		http.NotFound(w, r)
+		return
+	}
+	path := r.URL.EscapedPath()
+	if path == pathOAuthMetadata+iss.basePath {
+		p.serveDiscovery(w, r, iss)
+		return
+	}
+	rel, ok := strings.CutPrefix(path, iss.basePath)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	switch rel {
+	case PathAuthorization:
+		p.serveAuthorization(w, r, iss)
+	case PathToken:
+		p.serveToken(w, r, iss)
+	case PathUserInfo:
+		p.serveUserInfo(w, r, iss)
+	case PathIntrospection:
+		p.serveIntrospection(w, r, iss)
+	case PathRevocation:
+		p.serveRevocation(w, r, iss)
+	case PathJWKS:
+		p.serveJWKS(w, r, iss)
+	case PathOpenIDConfig:
+		p.serveDiscovery(w, r, iss)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// client looks up and validates a client of iss.
+func (p *Provider) client(ctx context.Context, iss *resolvedIssuer, id string) (*Client, error) {
+	c, err := p.cfg.Clients.Client(ctx, iss.url, id)
+	if errors.Is(err, ErrNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("look up client: %w", err)
+	}
+	if c.ID != id {
+		return nil, fmt.Errorf("client store returned client %q for %q", c.ID, id)
+	}
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (p *Provider) logError(ctx context.Context, msg string, err error) {
+	var e *Error
+	if errors.As(err, &e) && e.cause != nil {
+		err = e.cause
+	}
+	p.cfg.Logger.ErrorContext(ctx, "grantor: "+msg, "error", err)
+}
+
+func defaultErrorPage(w http.ResponseWriter, _ *http.Request, err *Error) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(err.statusCode())
+	fmt.Fprintln(w, err.Code)
+	if err.Description != "" {
+		fmt.Fprintln(w, sanitizeDescription(err.Description))
+	}
+}
