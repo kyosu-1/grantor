@@ -103,6 +103,14 @@ The suite checks round-tripping of every field, conflict and not-found semantics
 
 Set `Config.IssuerFor` instead of `Config.Issuer` to resolve the issuer from each request, for example from the Host header or a path prefix. Clients are looked up per issuer, and tokens and authorization requests are only accepted by the issuer that created them.
 
+## Conformance
+
+The example provider passes the [OpenID Foundation conformance suite](https://gitlab.com/openid/conformance-suite)'s Basic OP, Config OP and Form Post Basic OP plans with no failures or warnings, run locally with [`examples/conformance`](examples/conformance). Tests that ask a human to review a screenshot are reported as REVIEW, and the request object test is skipped because request objects are not supported. grantor has not been submitted for OpenID Certification.
+
 ## Roadmap
 
 Pushed authorization requests (RFC 9126), DPoP (RFC 9449), JWT access tokens (RFC 9068), RP-initiated logout, dynamic client registration, and running the OpenID Foundation conformance suite in CI.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
