@@ -82,10 +82,10 @@ func (p *Provider) Deny(w http.ResponseWriter, r *http.Request, req *Authorizati
 ```
 
 - `ParseAuthorizationRequest` performs today's validation and returns an unsaved request (`ID == ""`). Its errors remember whether they may be redirected to the client; `WriteAuthorizationError` redirects them, or renders `Config.ErrorPage` for errors that must not be redirected and for errors that did not come from parsing.
-- `SaveAuthorizationRequest` assigns the ID, sets `BindingHash` and the binding cookie, and stores the request. It also remembers the binding value in an unexported field of `req`, so that `Approve` and `Deny` accept that same value within the current HTTP request.
+- `SaveAuthorizationRequest` assigns the ID, sets `BindingHash` and the binding cookie on the response, and stores the request. Within the same HTTP request, `Approve` and `Deny` accept the binding cookie from the `Set-Cookie` header already written to the response, because the user agent has not sent it back yet.
 - `AuthorizationRequest` is unchanged: it loads a saved request and checks issuer, expiry and binding.
 - `Approve` and `Deny`:
-  1. For a saved request (`ID != ""`): load the stored copy, check issuer, expiry and binding (cookie on `r`, or the value remembered by `SaveAuthorizationRequest`), compare protocol fields with `req` (D7), and delete the stored copy atomically. The stored copy is used from here on.
+  1. For a saved request (`ID != ""`): load the stored copy, check issuer, expiry and binding (cookie on `r`, or the `Set-Cookie` header on `w`), compare protocol fields with `req` (D7), and delete the stored copy atomically. The stored copy is used from here on.
   2. Re-validate the request (D6): client exists; redirect URI registered; `response_type` is `code`; response mode valid for the redirect URI; scopes are a subset of the client's scopes; the PKCE policy is satisfied; the code challenge is well formed; issuer matches the request.
   3. `Approve` then validates the approval (unchanged rules) and issues the code; `Deny` sends the error.
 - Compared protocol fields (D7): `Issuer`, `ClientID`, `RedirectURI`, `RedirectURIInRequest`, `ResponseType`, `ResponseMode`, `State`, `Scopes`, `CodeChallenge`, `CodeChallengeMethod`, `Nonce`, `Prompt`, `MaxAge`, `RequestedSubject`. Edits to a request must be made before saving it.
