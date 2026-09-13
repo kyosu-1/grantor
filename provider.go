@@ -103,6 +103,17 @@ type Config struct {
 	// Endpoints configures the paths of the protocol endpoints.
 	Endpoints Endpoints
 
+	// Grants adds custom grant types to the token endpoint. Clients must list
+	// a grant type in Client.GrantTypes to use it. The built-in grant types
+	// cannot be redefined.
+	Grants map[GrantType]GrantFunc
+
+	// BeforeIssue is called before tokens are issued for any grant type,
+	// after all protocol checks. Returning an *Error sends it to the client;
+	// other errors become server_error. It may remove scopes from
+	// is.Scopes and set is.RefreshToken to false.
+	BeforeIssue func(ctx context.Context, is *Issuance) error
+
 	// DisableInteractionBinding stops binding authorization requests to the
 	// user agent with a cookie. Only disable it when the login pages run on
 	// a different site than the provider.
@@ -147,6 +158,16 @@ func New(cfg Config) (*Provider, error) {
 	for scope := range cfg.ScopeClaims {
 		if scope == "openid" || scope == "offline_access" {
 			return nil, fmt.Errorf("grantor: Config.ScopeClaims cannot redefine the %q scope", scope)
+		}
+	}
+	for gt, fn := range cfg.Grants {
+		switch {
+		case gt == "":
+			return nil, errors.New("grantor: Config.Grants has an empty grant type")
+		case gt == GrantTypeAuthorizationCode, gt == GrantTypeRefreshToken, gt == GrantTypeClientCredentials:
+			return nil, fmt.Errorf("grantor: Config.Grants cannot redefine the %s grant type", gt)
+		case fn == nil:
+			return nil, fmt.Errorf("grantor: Config.Grants has no function for %s", gt)
 		}
 	}
 	cfg.Endpoints.setDefaults()

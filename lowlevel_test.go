@@ -329,3 +329,147 @@ func TestExchangeRejectsForeignTokenRequests(t *testing.T) {
 		t.Fatal("Exchange accepted a replaced client")
 	}
 }
+
+const apiKeyGrant grantor.GrantType = "urn:example:params:oauth:grant-type:api-key"
+
+func TestCustomGrant(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.Grants = map[grantor.GrantType]grantor.GrantFunc{
+			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.TokenResponse, error) {
+				if req.Form.Get("api_key") != "key-for-alice" {
+					return nil, &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "unknown API key"}
+				}
+				return e.p.IssueTokens(ctx, req, grantor.Grant{Subject: "alice", Scopes: []string{"openid", "api"}, AuthTime: e.clock.Now()})
+			},
+		}
+	})
+	e.store.SetClient(testIssuer, grantor.Client{
+		ID: "cli", SecretHash: grantor.HashSecret(confidentialSecret),
+		GrantTypes: []grantor.GrantType{apiKeyGrant}, Scopes: []string{"openid", "api"},
+	})
+
+	status, body := e.tokenRequest(url.Values{"grant_type": {string(apiKeyGrant)}, "api_key": {"key-for-alice"}}, basic("cli", confidentialSecret))
+	if status != http.StatusOK || body["id_token"] == nil || body["scope"] != "openid api" || body["refresh_token"] != nil {
+		t.Fatalf("custom grant = %d %v", status, body)
+	}
+	if info := e.userInfo(body["access_token"].(string)); info["sub"] != "alice" {
+		t.Fatalf("userinfo = %v", info)
+	}
+	status, body = e.tokenRequest(url.Values{"grant_type": {string(apiKeyGrant)}, "api_key": {"wrong"}}, basic("cli", confidentialSecret))
+	expectError(t, status, body, http.StatusBadRequest, "invalid_grant")
+	status, body = e.tokenRequest(url.Values{"grant_type": {string(apiKeyGrant)}, "api_key": {"key-for-alice"}}, basic(serviceClient, confidentialSecret))
+	expectError(t, status, body, http.StatusBadRequest, "unauthorized_client")
+	status, body = e.tokenRequest(url.Values{"grant_type": {"urn:example:unknown"}}, basic("cli", confidentialSecret))
+	expectError(t, status, body, http.StatusBadRequest, "unsupported_grant_type")
+
+	m := decodeJSON(t, e.get(grantor.PathOpenIDConfig, nil))
+	if !slices.Contains(m["grant_types_supported"].([]any), any(string(apiKeyGrant))) {
+		t.Fatalf("grant_types_supported = %v", m["grant_types_supported"])
+	}
+}
+
+func TestCustomGrantValidation(t *testing.T) {
+	testKeys(t)
+	store := memory.New()
+	base := grantor.Config{
+		Issuer:  &grantor.Issuer{URL: testIssuer, Keys: []grantor.SigningKey{{ID: "k", Signer: rsaKey}}},
+		Clients: store, Storage: store,
+	}
+	noop := func(context.Context, *grantor.TokenRequest) (*grantor.TokenResponse, error) { return nil, nil }
+	for name, grants := range map[string]map[grantor.GrantType]grantor.GrantFunc{
+		"built-in": {grantor.GrantTypeRefreshToken: noop},
+		"empty":    {"": noop},
+		"nil func": {apiKeyGrant: nil},
+	} {
+		cfg := base
+		cfg.Grants = grants
+		if _, err := grantor.New(cfg); err == nil {
+			t.Errorf("%s: New succeeded", name)
+		}
+	}
+}
+
+func TestBeforeIssue(t *testing.T) {
+	disabled := map[string]bool{}
+	var seen []grantor.GrantType
+	e := newEnv(t)
+	e.registerClients()
+	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
+			seen = append(seen, is.GrantType)
+			if disabled[is.Subject] {
+				return &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "the account is disabled"}
+			}
+			is.Scopes = slices.DeleteFunc(is.Scopes, func(s string) bool { return s == "phone" })
+			return nil
+		}
+	})
+
+	code := e.login(authParams(confidentialClient, "openid phone offline_access", pkcePair{}), nil)
+	status, body := e.exchangeCode(confidentialClient, code, "", basic(confidentialClient, confidentialSecret))
+	if status != http.StatusOK || body["scope"] != "openid offline_access" || body["refresh_token"] == nil {
+		t.Fatalf("code exchange = %d %v", status, body)
+	}
+
+	disabled["alice"] = true
+	status, refreshed := e.tokenRequest(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {body["refresh_token"].(string)}},
+		basic(confidentialClient, confidentialSecret))
+	if status != http.StatusBadRequest || refreshed["error"] != "invalid_grant" || refreshed["error_description"] != "the account is disabled" {
+		t.Fatalf("refresh for a disabled account = %d %v", status, refreshed)
+	}
+
+	status, cc := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic(serviceClient, confidentialSecret))
+	if status != http.StatusOK {
+		t.Fatalf("client credentials = %d %v", status, cc)
+	}
+	want := []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken, grantor.GrantTypeClientCredentials}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("BeforeIssue saw %v, want %v", seen, want)
+	}
+}
+
+func TestBeforeIssueCanWithholdRefreshToken(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
+			is.RefreshToken = false
+			return nil
+		}
+	})
+	code := e.login(authParams(confidentialClient, "openid offline_access", pkcePair{}), nil)
+	status, body := e.exchangeCode(confidentialClient, code, "", basic(confidentialClient, confidentialSecret))
+	if status != http.StatusOK || body["refresh_token"] != nil {
+		t.Fatalf("code exchange = %d %v", status, body)
+	}
+}
+
+func TestBeforeIssueCannotWiden(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
+			is.Scopes = append(is.Scopes, "admin")
+			return nil
+		}
+	})
+	status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic(serviceClient, confidentialSecret))
+	expectError(t, status, body, http.StatusInternalServerError, "server_error")
+}
+
+func TestCustomErrorFromBeforeIssue(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.BeforeIssue = func(context.Context, *grantor.Issuance) error {
+			return &grantor.Error{Code: "account_suspended", Description: "suspended", URI: "https://op.example.com/help", StatusCode: http.StatusForbidden}
+		}
+	})
+	rec := e.postForm(grantor.PathToken, url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic(serviceClient, confidentialSecret))
+	body := decodeJSON(t, rec)
+	if rec.Code != http.StatusForbidden || body["error"] != "account_suspended" || body["error_uri"] != "https://op.example.com/help" {
+		t.Fatalf("custom error = %d %v", rec.Code, body)
+	}
+}

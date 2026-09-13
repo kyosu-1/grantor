@@ -200,10 +200,8 @@ func (c *Client) validate() error {
 		return fmt.Errorf("client %q has unsupported PKCE policy %q", c.ID, c.PKCE)
 	}
 	for _, g := range c.grantTypes() {
-		switch g {
-		case GrantTypeAuthorizationCode, GrantTypeRefreshToken, GrantTypeClientCredentials:
-		default:
-			return fmt.Errorf("client %q has unsupported grant type %q", c.ID, g)
+		if g == "" {
+			return fmt.Errorf("client %q has an empty grant type", c.ID)
 		}
 	}
 	for _, u := range c.RedirectURIs {

@@ -2,6 +2,7 @@ package grantor
 
 import (
 	"net/http"
+	"slices"
 )
 
 // metadata is the OpenID Provider Metadata (OpenID Connect Discovery 1.0)
@@ -55,7 +56,7 @@ func (p *Provider) serveDiscovery(w http.ResponseWriter, r *http.Request, iss *r
 		ScopesSupported:                            p.supportedScopes(),
 		ResponseTypesSupported:                     []string{"code"},
 		ResponseModesSupported:                     []string{responseModeQuery, responseModeFragment, responseModeFormPost},
-		GrantTypesSupported:                        []string{string(GrantTypeAuthorizationCode), string(GrantTypeRefreshToken), string(GrantTypeClientCredentials)},
+		GrantTypesSupported:                        p.supportedGrantTypes(),
 		SubjectTypesSupported:                      []string{"public"},
 		IDTokenSigningAlgValuesSupported:           iss.keys.algorithms(),
 		TokenEndpointAuthMethodsSupported:          allMethods,
@@ -76,6 +77,16 @@ func (p *Provider) serveDiscovery(w http.ResponseWriter, r *http.Request, iss *r
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	writeJSON(w, http.StatusOK, m)
+}
+
+func (p *Provider) supportedGrantTypes() []string {
+	types := []string{string(GrantTypeAuthorizationCode), string(GrantTypeRefreshToken), string(GrantTypeClientCredentials)}
+	var custom []string
+	for gt := range p.cfg.Grants {
+		custom = append(custom, string(gt))
+	}
+	slices.Sort(custom)
+	return append(types, custom...)
 }
 
 func (p *Provider) serveJWKS(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer) {

@@ -3,6 +3,7 @@ package grantor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -123,7 +124,21 @@ func (p *Provider) exchange(ctx context.Context, req *TokenRequest) (*TokenRespo
 	case GrantTypeClientCredentials:
 		return p.exchangeClientCredentials(ctx, req)
 	}
-	return nil, newError(CodeUnsupportedGrantType, "the grant type is not supported")
+	fn, ok := p.cfg.Grants[req.GrantType]
+	if !ok {
+		return nil, newError(CodeUnsupportedGrantType, "the grant type is not supported")
+	}
+	if !req.Client.allowsGrant(req.GrantType) {
+		return nil, newError(CodeUnauthorizedClient, "the client may not use this grant type")
+	}
+	resp, err := fn(ctx, req)
+	if err != nil {
+		return nil, asProtocolError(err)
+	}
+	if resp == nil {
+		return nil, errServer(fmt.Errorf("grant %q returned no response", req.GrantType))
+	}
+	return resp, nil
 }
 
 // WriteTokenResponse writes a successful token response.
@@ -333,8 +348,13 @@ func (p *Provider) revokeReusedGrant(ctx context.Context, t *Token) *Error {
 }
 
 // issueTokens issues an access token with accessScopes, and optionally a
-// refresh token and an ID token, for grant.
+// refresh token and an ID token, for grant. Every grant type issues tokens
+// here, so Config.BeforeIssue sees all of them.
 func (p *Provider) issueTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, accessScopes []string, withRefresh bool, nonce string, grantType GrantType) (*TokenResponse, *Error) {
+	accessScopes, withRefresh, perr := p.runBeforeIssue(ctx, iss, client, grant, grantType, accessScopes, withRefresh)
+	if perr != nil {
+		return nil, perr
+	}
 	now := p.now()
 	accessToken := randomToken()
 	resp := &TokenResponse{
