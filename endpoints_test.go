@@ -542,7 +542,7 @@ func TestMultipleIssuers(t *testing.T) {
 	for _, iss := range issuers {
 		store.SetClient(iss.URL, grantor.Client{
 			ID: "app", SecretHash: grantor.HashSecret(confidentialSecret),
-			RedirectURIs: []string{clientRedirect}, Scopes: []string{"openid"},
+			RedirectURIs: []string{clientRedirect}, Scopes: []string{"openid"}, PKCE: grantor.PKCEOptional,
 		})
 	}
 

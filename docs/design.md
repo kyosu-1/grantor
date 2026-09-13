@@ -4,8 +4,8 @@ This document records the decisions behind the initial implementation. They are 
 
 ## Goals
 
-- A library for building OAuth 2.0 authorization servers and OpenID Connect providers that is as flexible as a low-level toolkit, with an API that reads like ordinary Go.
-- Correct and secure by default: current specifications and the OAuth 2.0 Security BCP (RFC 9700), with no hand-written cryptography.
+- A library for building OAuth 2.1 authorization servers and OpenID Connect providers that is as flexible as a low-level toolkit, with an API that reads like ordinary Go.
+- Correct and secure by default: OAuth 2.1 (draft-ietf-oauth-v2-1-16), OpenID Connect and RFC 9700, with no hand-written cryptography.
 - Multiple issuers in one process from the start.
 - Few dependencies: the standard library and go-jose.
 
@@ -35,7 +35,9 @@ ClientStore  registered clients, per issuer
 
 ### Authorization requests and interaction
 
-The authorization endpoint validates the request completely before the application sees it: client, redirect URI, response type and mode, scopes, PKCE, prompt, max_age, claims and id_token_hint. Scopes the client is not registered for are ignored, as OpenID Connect Core §3.1.2.1 recommends for scopes that are not understood; the token response reports the granted scope. Errors that cannot be redirected safely (unknown client, unregistered redirect URI) go to `Config.ErrorPage`; all others are redirected with `state` and `iss`.
+The authorization endpoint validates the request completely before the application sees it: client, redirect URI, response type and mode, scopes, PKCE, prompt, max_age, claims and id_token_hint. Scopes the client is not registered for are ignored, as OpenID Connect Core §3.1.2.1 recommends for scopes that are not understood; the token response reports the granted scope. A request without a scope is processed with no scopes, which is grantor's documented default (OAuth 2.1 §1.4.1).
+
+Redirect URIs are compared with simple string comparison, except for the port of loopback IP redirect URIs. Private-use URI schemes must be reverse domain names such as `com.example.app` (OAuth 2.1 §2.3.1). Errors that cannot be redirected safely (unknown client, unregistered redirect URI) go to `Config.ErrorPage`; all others are redirected with `state` and `iss`.
 
 A valid request is saved with a random ID and handed to `Config.Interact`. The application authenticates the end-user however it likes and finishes with `Provider.Approve` or `Provider.Deny`. `Approve` enforces what the application must not get wrong:
 
@@ -59,19 +61,30 @@ Every token records its `GrantID`. Tokens issued from one authorization share it
 - **Refresh tokens rotate** on every use. Reusing a rotated refresh token revokes the grant (RFC 9700 §4.14).
 - **Revoking a refresh token** revokes the access tokens of its grant (RFC 7009 §2.1).
 
-Single-use semantics are part of the storage contract: `ConsumeToken` must be atomic, and exactly one concurrent call sees an unconsumed token. The provider validates a code's client, redirect URI and PKCE verifier before consuming it, so a request that fails verification cannot burn a code.
+Single-use semantics are part of the storage contract: `ConsumeToken` must be atomic, and exactly one concurrent call sees an unconsumed token. The provider validates a code's client, redirect URI and PKCE verifier before it looks at reuse or consumes the code. A request that fails verification therefore cannot burn a code, and a replay by someone who does not hold the verifier does not revoke the legitimate client's tokens (OAuth 2.1 §7.5.3).
+
+OAuth 2.1 removed `redirect_uri` from the token request. It is still compared when a client sends it, and required as in RFC 6749 for codes issued without PKCE (OAuth 2.1 §10.2).
+
+Authorization codes, access tokens and refresh tokens are 43-character base64url strings. Authorization request parameters may be up to 8000 bytes each.
 
 Refresh tokens are issued when the client may use the refresh token grant and, for OpenID Connect requests, `offline_access` was granted (OpenID Connect Core §11).
 
 ### Client authentication
 
-`client_secret_basic` (with form-decoding of credentials), `client_secret_post`, `private_key_jwt` and `none`. A client must use its registered method, and a request may only use one method. Client assertions accept asymmetric algorithms only, require `exp` and `jti`, expire within an hour, and are single-use through `Storage.ClaimAssertionID`. Their audience must be a single value, either the issuer identifier or the token endpoint URL, so that an assertion made for another server cannot be replayed.
+`client_secret_basic` (with form-decoding of credentials), `client_secret_post`, `private_key_jwt` and `none`. A request may only use one method. A client with a secret may send it with either secret method, since OAuth 2.1 §2.4.1 requires accepting it in the request body; otherwise the client must use its registered method. Client assertions accept asymmetric algorithms only, require `exp` and `jti`, expire within an hour, and are single-use through `Storage.ClaimAssertionID`. Following RFC 7523bis, which OAuth 2.1 adopts, their audience must be the issuer identifier as its only value; the token endpoint URL is rejected.
+
+OAuth 2.1 §2.4.1 requires protecting endpoints that accept client secrets against brute force. grantor does not rate-limit; wrap the provider with rate-limiting middleware for the token, introspection and revocation endpoints.
 
 Client secrets are stored as SHA-256 hashes and compared in constant time. This is sound only for high-entropy secrets, which `GenerateSecret` produces; it avoids a password-hashing dependency.
 
 ### PKCE
 
-Only `S256` is supported. Public clients must use PKCE, and `Client.RequirePKCE` extends that to confidential clients. A `code_verifier` for a code issued without a challenge is rejected, which prevents PKCE downgrade.
+Only `S256` is supported; OAuth 2.1 forbids `plain`. Every client must use PKCE by default. `Client.PKCE` relaxes this for confidential clients only:
+
+- `PKCEUnlessNonce` allows omitting PKCE on OpenID Connect requests that carry a nonce, the exception in OAuth 2.1 §7.5.1.1 for clients known to validate the nonce;
+- `PKCEOptional` allows omitting PKCE altogether, as OAuth 2.0 and OpenID Connect Core do. This does not conform to OAuth 2.1 and is meant for clients that cannot be updated. The OpenID conformance harness uses it, because the OpenID Connect plans send most requests without PKCE.
+
+A `code_verifier` for a code issued without a challenge is rejected, which prevents PKCE downgrade.
 
 ### Claims
 

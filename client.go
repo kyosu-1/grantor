@@ -25,7 +25,7 @@ const (
 	AuthMethodNone AuthMethod = "none"
 )
 
-// GrantType is an OAuth 2.0 grant type.
+// GrantType is an OAuth 2.1 grant type.
 type GrantType string
 
 const (
@@ -34,7 +34,26 @@ const (
 	GrantTypeClientCredentials GrantType = "client_credentials"
 )
 
-// Client is a registered OAuth 2.0 client.
+// PKCEPolicy controls when a client must use PKCE.
+type PKCEPolicy string
+
+const (
+	// PKCERequired requires PKCE on every authorization request, as OAuth 2.1
+	// does. It is the default.
+	PKCERequired PKCEPolicy = "required"
+
+	// PKCEUnlessNonce lets a confidential client omit PKCE on OpenID Connect
+	// requests that carry a nonce. OAuth 2.1 section 7.5.1.1 allows this
+	// only when the client is known to validate the nonce properly.
+	PKCEUnlessNonce PKCEPolicy = "unless_nonce"
+
+	// PKCEOptional lets a confidential client omit PKCE altogether, as OAuth
+	// 2.0 and OpenID Connect Core allow. It does not conform to OAuth 2.1;
+	// use it only for clients that cannot be updated.
+	PKCEOptional PKCEPolicy = "optional"
+)
+
+// Client is a registered OAuth 2.1 client.
 type Client struct {
 	// ID is the client_id.
 	ID string
@@ -42,7 +61,9 @@ type Client struct {
 	// AuthMethod is how the client authenticates at the token, introspection
 	// and revocation endpoints. It defaults to client_secret_basic when
 	// SecretHash is set, private_key_jwt when JWKS is set, and none
-	// otherwise.
+	// otherwise. A client with a secret may send it with either
+	// client_secret_basic or client_secret_post, since OAuth 2.1 requires
+	// accepting credentials in the request body.
 	AuthMethod AuthMethod
 
 	// SecretHash is the SHA-256 hash of the client secret, as returned by
@@ -67,9 +88,9 @@ type Client struct {
 	// Scopes lists the scopes the client may request.
 	Scopes []string
 
-	// RequirePKCE forces confidential clients to use PKCE. Public clients
-	// must always use PKCE.
-	RequirePKCE bool
+	// PKCE controls when the client must use PKCE. It defaults to
+	// PKCERequired, and public clients always require PKCE.
+	PKCE PKCEPolicy
 
 	// IDTokenSigningAlg is the JWS algorithm for ID tokens issued to this
 	// client (id_token_signed_response_alg). It defaults to RS256.
@@ -106,6 +127,18 @@ func (c *Client) authMethod() AuthMethod {
 }
 
 func (c *Client) isPublic() bool { return c.authMethod() == AuthMethodNone }
+
+func (c *Client) usesSecret() bool {
+	m := c.authMethod()
+	return m == AuthMethodClientSecretBasic || m == AuthMethodClientSecretPost
+}
+
+func (c *Client) pkcePolicy() PKCEPolicy {
+	if c.PKCE == "" || c.isPublic() {
+		return PKCERequired
+	}
+	return c.PKCE
+}
 
 func (c *Client) grantTypes() []GrantType {
 	if len(c.GrantTypes) == 0 {
@@ -157,6 +190,15 @@ func (c *Client) validate() error {
 	default:
 		return fmt.Errorf("client %q has unsupported auth method %q", c.ID, m)
 	}
+	switch c.PKCE {
+	case "", PKCERequired:
+	case PKCEUnlessNonce, PKCEOptional:
+		if c.isPublic() {
+			return fmt.Errorf("client %q is public and must always use PKCE", c.ID)
+		}
+	default:
+		return fmt.Errorf("client %q has unsupported PKCE policy %q", c.ID, c.PKCE)
+	}
 	for _, g := range c.grantTypes() {
 		switch g {
 		case GrantTypeAuthorizationCode, GrantTypeRefreshToken, GrantTypeClientCredentials:
@@ -183,9 +225,16 @@ func validateRedirectURI(raw string) error {
 	if u.Fragment != "" || strings.Contains(raw, "#") {
 		return fmt.Errorf("redirect URI %q has a fragment", raw)
 	}
-	switch strings.ToLower(u.Scheme) {
+	switch scheme := strings.ToLower(u.Scheme); scheme {
+	case "http", "https":
 	case "javascript", "data", "vbscript", "file", "blob":
 		return fmt.Errorf("redirect URI %q uses a forbidden scheme", raw)
+	default:
+		// OAuth 2.1 section 2.3.1: private-use URI schemes should be reverse
+		// domain names, such as com.example.app.
+		if !strings.Contains(scheme, ".") {
+			return fmt.Errorf("redirect URI %q must use a reverse domain name scheme such as com.example.app", raw)
+		}
 	}
 	return nil
 }

@@ -6,19 +6,24 @@ import (
 	"encoding/base64"
 )
 
-// parsePKCE validates the RFC 7636 parameters of an authorization request.
-// Only the S256 method is supported, as the plain method offers no
-// protection when the authorization request itself leaks.
+// parsePKCE validates the PKCE parameters of an authorization request
+// (OAuth 2.1 section 4.1.1). Only the S256 method is supported; OAuth 2.1
+// forbids the plain method.
 func parsePKCE(client *Client, q params, req *AuthorizationRequest) *Error {
 	challenge, method := q.get("code_challenge"), q.get("code_challenge_method")
 	if challenge == "" {
 		if method != "" {
 			return errInvalidRequest("code_challenge_method was sent without code_challenge")
 		}
-		if client.isPublic() || client.RequirePKCE {
-			return errInvalidRequest("code_challenge is required")
+		switch client.pkcePolicy() {
+		case PKCEOptional:
+			return nil
+		case PKCEUnlessNonce:
+			if req.IsOpenID() && req.Nonce != "" {
+				return nil
+			}
 		}
-		return nil
+		return errInvalidRequest("code_challenge is required")
 	}
 	if method != "S256" {
 		return errInvalidRequest("code_challenge_method must be S256")

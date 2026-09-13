@@ -26,7 +26,6 @@ func Clients(relyingPartyURL string) []grantor.Client {
 			RedirectURIs: []string{relyingPartyURL + "/callback"},
 			GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 			Scopes:       []string{"openid", "profile", "email", "phone", "offline_access"},
-			RequirePKCE:  true,
 		},
 		{
 			// A native app or CLI using a loopback redirect URI on any port.

@@ -1,6 +1,6 @@
 # grantor
 
-A flexible, idiomatic Go toolkit for building OAuth 2.0 authorization servers and OpenID Connect providers.
+A flexible, idiomatic Go toolkit for building OAuth 2.1 authorization servers and OpenID Connect providers.
 
 grantor implements the protocol; your application keeps control of everything else: where data is stored, how end-users sign in, what the consent screen looks like, and which claims are released.
 
@@ -8,7 +8,7 @@ grantor implements the protocol; your application keeps control of everything el
 
 ## Features
 
-- **Authorization code flow with PKCE** (S256; required for public clients), refresh tokens with rotation and reuse detection, client credentials
+- **OAuth 2.1**: authorization code flow with PKCE (S256, required for every client by default), refresh token rotation with reuse detection, client credentials, exact redirect URI matching
 - **OpenID Connect Core**: ID tokens, UserInfo, `nonce`, `prompt`, `max_age`, `id_token_hint`, `acr`/`amr`, the `claims` parameter, `offline_access`
 - **Discovery**: OpenID Provider metadata and RFC 8414 authorization server metadata, JWKS
 - **Token introspection** (RFC 7662) and **revocation** (RFC 7009)
@@ -18,7 +18,7 @@ grantor implements the protocol; your application keeps control of everything el
 - **Multiple issuers** in one process, with per-issuer keys and clients
 - **Signing keys** from any `crypto.Signer` (RSA, ECDSA, Ed25519), so keys can live in a KMS or HSM
 
-Implicit and password grants are intentionally not supported, following OAuth 2.1 and the OAuth 2.0 Security Best Current Practice (RFC 9700).
+Implicit and password grants are intentionally not supported, following OAuth 2.1 and RFC 9700. Clients that predate OAuth 2.1 can be allowed to skip PKCE per client with `Client.PKCE`; see [docs/design.md](docs/design.md).
 
 ## Design
 
@@ -106,6 +106,30 @@ Set `Config.IssuerFor` instead of `Config.Issuer` to resolve the issuer from eac
 ## Conformance
 
 The example provider passes the [OpenID Foundation conformance suite](https://gitlab.com/openid/conformance-suite)'s Basic OP, Config OP and Form Post Basic OP plans with no failures or warnings, run locally with [`examples/conformance`](examples/conformance). Tests that ask a human to review a screenshot are reported as REVIEW, and the request object test is skipped because request objects are not supported. grantor has not been submitted for OpenID Certification.
+
+## Specifications
+
+OAuth 2.1 is still an Internet-Draft; grantor follows draft-ietf-oauth-v2-1-16. Specification titles below are the official ones, so some still say "OAuth 2.0".
+
+| Specification | Support |
+|---|---|
+| [The OAuth 2.1 Authorization Framework (draft-ietf-oauth-v2-1)](https://datatracker.ietf.org/doc/draft-ietf-oauth-v2-1/) | Authorization code, refresh token and client credentials grants |
+| [RFC 6749: The OAuth 2.0 Authorization Framework](https://www.rfc-editor.org/rfc/rfc6749) | The base that OAuth 2.1 consolidates; `redirect_uri` handling for clients without PKCE |
+| [RFC 6750: Bearer Token Usage](https://www.rfc-editor.org/rfc/rfc6750) | UserInfo endpoint (Authorization header and form body, not the query string) |
+| [RFC 7636: Proof Key for Code Exchange (PKCE)](https://www.rfc-editor.org/rfc/rfc7636) | `S256` only |
+| [RFC 7009: Token Revocation](https://www.rfc-editor.org/rfc/rfc7009) | Revocation endpoint |
+| [RFC 7662: Token Introspection](https://www.rfc-editor.org/rfc/rfc7662) | Introspection endpoint |
+| [RFC 8414: Authorization Server Metadata](https://www.rfc-editor.org/rfc/rfc8414) | `/.well-known/oauth-authorization-server` |
+| [RFC 9207: Authorization Server Issuer Identification](https://www.rfc-editor.org/rfc/rfc9207) | `iss` in every authorization response |
+| [RFC 8252: OAuth 2.0 for Native Apps](https://www.rfc-editor.org/rfc/rfc8252) | Loopback redirect URIs on any port, reverse domain private-use schemes |
+| [RFC 9700: Best Current Practice for OAuth 2.0 Security](https://www.rfc-editor.org/rfc/rfc9700) | Security recommendations |
+| [RFC 7521: Assertion Framework](https://www.rfc-editor.org/rfc/rfc7521) and [RFC 7523: JWT Profile for Client Authentication](https://www.rfc-editor.org/rfc/rfc7523) | `private_key_jwt` |
+| [draft-ietf-oauth-rfc7523bis](https://datatracker.ietf.org/doc/draft-ietf-oauth-rfc7523bis/) | Issuer identifier as the sole client assertion audience |
+| [RFC 7515 (JWS)](https://www.rfc-editor.org/rfc/rfc7515), [RFC 7517 (JWK)](https://www.rfc-editor.org/rfc/rfc7517), [RFC 7518 (JWA)](https://www.rfc-editor.org/rfc/rfc7518), [RFC 7519 (JWT)](https://www.rfc-editor.org/rfc/rfc7519) | ID tokens, JWKS and client assertions, through go-jose |
+| [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html) | Authorization code flow, ID tokens, UserInfo, claims parameter, `prompt`, `max_age`, `id_token_hint`, `offline_access` |
+| [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-connect-discovery-1_0.html) | `/.well-known/openid-configuration` |
+| [OAuth 2.0 Multiple Response Type Encoding Practices](https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html) | `query` and `fragment` response modes |
+| [OAuth 2.0 Form Post Response Mode](https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html) | `form_post` response mode |
 
 ## Roadmap
 

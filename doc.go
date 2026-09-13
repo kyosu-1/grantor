@@ -1,4 +1,4 @@
-// Package grantor is a toolkit for building OAuth 2.0 authorization servers
+// Package grantor is a toolkit for building OAuth 2.1 authorization servers
 // and OpenID Connect providers.
 //
 // A [Provider] is an http.Handler that serves the protocol endpoints of one
@@ -28,16 +28,17 @@
 //
 // # Supported specifications
 //
-//   - RFC 6749 authorization code, refresh token and client credentials grants
-//   - RFC 7636 PKCE (S256 only; required for public clients)
+//   - OAuth 2.1 (draft-ietf-oauth-v2-1-16): authorization code with PKCE,
+//     refresh token and client credentials grants
+//   - RFC 7636 PKCE (S256 only; required for every client by default)
 //   - RFC 7009 token revocation and RFC 7662 token introspection
 //   - RFC 8414 authorization server metadata and RFC 9207 issuer identification
 //   - RFC 8252 loopback redirect URIs for native apps
 //   - OpenID Connect Core 1.0 (code flow), Discovery 1.0 and the Form Post
 //     Response Mode
-//   - client_secret_basic, client_secret_post, private_key_jwt and none client
-//     authentication
+//   - client_secret_basic, client_secret_post, private_key_jwt (RFC 7523 and
+//     RFC 7523bis) and none client authentication
 //
 // Implicit and resource owner password credentials grants are not supported,
-// following OAuth 2.1 and RFC 9700.
+// as OAuth 2.1 omits them.
 package grantor

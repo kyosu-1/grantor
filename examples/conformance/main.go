@@ -48,6 +48,9 @@ func main() {
 			RedirectURIs: []string{redirectURI},
 			GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 			Scopes:       []string{"openid", "profile", "email", "address", "phone", "offline_access"},
+			// The OpenID Connect plans send most requests without PKCE, as
+			// OpenID Connect Core allows; OAuth 2.1 would require it.
+			PKCE: grantor.PKCEOptional,
 		}
 	}
 

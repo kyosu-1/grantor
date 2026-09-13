@@ -21,7 +21,9 @@ const (
 	responseModeFormPost = "form_post"
 
 	// maxParamLength bounds individual authorization request parameters.
-	maxParamLength = 4096
+	// OAuth 2.1 section 1.7.1 asks for values that fit an 8000-octet
+	// request line to be supported.
+	maxParamLength = 8000
 	// maxMaxAge bounds max_age so it cannot overflow time.Duration.
 	maxMaxAge = 10 * 365 * 24 * 60 * 60
 )

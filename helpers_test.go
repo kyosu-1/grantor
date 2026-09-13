@@ -164,12 +164,16 @@ func (e *env) registerClients() {
 		GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Scopes:       allScopes,
 	})
+	// Many tests exercise confidential clients without PKCE, as OAuth 2.0
+	// and OpenID Connect Core allow; the OAuth 2.1 default is tested
+	// separately.
 	e.store.SetClient(e.issuer, grantor.Client{
 		ID:           confidentialClient,
 		SecretHash:   grantor.HashSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect},
 		GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, grantor.GrantTypeRefreshToken},
 		Scopes:       allScopes,
+		PKCE:         grantor.PKCEOptional,
 	})
 	e.store.SetClient(e.issuer, grantor.Client{
 		ID:                postClient,
@@ -178,6 +182,7 @@ func (e *env) registerClients() {
 		RedirectURIs:      []string{clientRedirect},
 		Scopes:            allScopes,
 		IDTokenSigningAlg: "ES256",
+		PKCE:              grantor.PKCEOptional,
 	})
 	e.store.SetClient(e.issuer, grantor.Client{
 		ID:           jwtClient,

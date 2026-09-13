@@ -112,7 +112,7 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// Provider is an OAuth 2.0 authorization server and OpenID Provider.
+// Provider is an OAuth 2.1 authorization server and OpenID Provider.
 // It is an http.Handler serving all protocol endpoints.
 type Provider struct {
 	cfg    Config

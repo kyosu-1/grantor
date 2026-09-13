@@ -67,17 +67,26 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, iss *resolvedI
 		return nil, errInvalidRequest("code is required")
 	}
 	hash := hashToken(code)
-	t, perr := p.usableSingleUseToken(ctx, iss, client, hash, TokenTypeAuthorizationCode)
+	t, perr := p.singleUseToken(ctx, iss, client, hash, TokenTypeAuthorizationCode)
 	if perr != nil {
 		return nil, perr
 	}
 
-	// RFC 6749 section 4.1.3: redirect_uri must be repeated exactly if it was
-	// part of the authorization request.
-	if redirectURI := q.get("redirect_uri"); (t.RedirectURIInRequest || redirectURI != "") && redirectURI != t.RedirectURI {
+	// OAuth 2.1 removed redirect_uri from the token request, because PKCE
+	// prevents code injection. It is still checked when sent, and required
+	// as in RFC 6749 section 4.1.3 for codes issued without PKCE (OAuth 2.1
+	// section 10.2).
+	redirectURI := q.get("redirect_uri")
+	if (redirectURI != "" || (t.RedirectURIInRequest && t.CodeChallenge == "")) && redirectURI != t.RedirectURI {
 		return nil, errInvalidGrant("redirect_uri does not match the authorization request")
 	}
 	if perr := verifyPKCE(t, q.get("code_verifier")); perr != nil {
+		return nil, perr
+	}
+	// Reuse is only acted on once the rest of the request is valid, so that
+	// someone holding a stolen code without its verifier cannot revoke the
+	// legitimate client's tokens (OAuth 2.1 section 7.5.3).
+	if perr := p.checkUnused(ctx, t); perr != nil {
 		return nil, perr
 	}
 	if perr := checkClientScopes(client, t.Scopes); perr != nil {
@@ -101,8 +110,11 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, iss *resolvedIssuer
 		return nil, errInvalidRequest("refresh_token is required")
 	}
 	hash := hashToken(refreshToken)
-	t, perr := p.usableSingleUseToken(ctx, iss, client, hash, TokenTypeRefreshToken)
+	t, perr := p.singleUseToken(ctx, iss, client, hash, TokenTypeRefreshToken)
 	if perr != nil {
+		return nil, perr
+	}
+	if perr := p.checkUnused(ctx, t); perr != nil {
 		return nil, perr
 	}
 
@@ -153,9 +165,10 @@ func checkClientScopes(client *Client, scopes []string) *Error {
 	return nil
 }
 
-// usableSingleUseToken loads an authorization code or refresh token and
-// checks that client may redeem it. It does not consume the token.
-func (p *Provider) usableSingleUseToken(ctx context.Context, iss *resolvedIssuer, client *Client, hash string, typ TokenType) (*Token, *Error) {
+// singleUseToken loads an authorization code or refresh token issued by iss
+// to client. It does not check whether the token was used or has expired;
+// see checkUnused.
+func (p *Provider) singleUseToken(ctx context.Context, iss *resolvedIssuer, client *Client, hash string, typ TokenType) (*Token, *Error) {
 	t, err := p.cfg.Storage.Token(ctx, hash)
 	if errors.Is(err, ErrNotFound) {
 		return nil, errInvalidGrant("the grant is invalid, expired or revoked")
@@ -166,15 +179,20 @@ func (p *Provider) usableSingleUseToken(ctx context.Context, iss *resolvedIssuer
 	if t.Type != typ || t.Issuer != iss.url || t.ClientID != client.ID {
 		return nil, errInvalidGrant("the grant is invalid, expired or revoked")
 	}
-	// Reuse is detected even after expiry, so that a replayed code or refresh
-	// token still revokes what was issued from it.
+	return t, nil
+}
+
+// checkUnused rejects a single-use token that was already used, revoking its
+// grant, or that has expired. Reuse is detected even after expiry, so that a
+// replayed token still revokes what was issued from it.
+func (p *Provider) checkUnused(ctx context.Context, t *Token) *Error {
 	if !t.ConsumedAt.IsZero() {
-		return nil, p.revokeReusedGrant(ctx, t)
+		return p.revokeReusedGrant(ctx, t)
 	}
 	if !p.now().Before(t.ExpiresAt) {
-		return nil, errInvalidGrant("the grant is invalid, expired or revoked")
+		return errInvalidGrant("the grant is invalid, expired or revoked")
 	}
-	return t, nil
+	return nil
 }
 
 // consume atomically marks a single-use token as used.
@@ -194,7 +212,7 @@ func (p *Provider) consume(ctx context.Context, hash string) *Error {
 
 // revokeReusedGrant revokes every token of a grant whose authorization code
 // or refresh token was used twice, which indicates that it was stolen
-// (RFC 6749 section 4.1.2, RFC 9700 section 4.14).
+// (OAuth 2.1 sections 4.1.3 and 4.3.1).
 func (p *Provider) revokeReusedGrant(ctx context.Context, t *Token) *Error {
 	if err := p.cfg.Storage.RevokeGrant(ctx, t.GrantID); err != nil {
 		return errServer(err)

@@ -187,9 +187,23 @@ func TestConfidentialClientAuthentication(t *testing.T) {
 		}
 	})
 
-	t.Run("method not registered for client", func(t *testing.T) {
+	t.Run("secret methods are interchangeable", func(t *testing.T) {
 		code := e.login(authParams(postClient, "openid", pkcePair{}), nil)
-		status, body := e.exchangeCode(postClient, code, "", basic(postClient, confidentialSecret))
+		if status, body := e.exchangeCode(postClient, code, "", basic(postClient, confidentialSecret)); status != http.StatusOK {
+			t.Fatalf("client_secret_basic for a client_secret_post client = %d %v", status, body)
+		}
+		code = e.login(authParams(confidentialClient, "openid", pkcePair{}), nil)
+		status, body := e.tokenRequest(url.Values{
+			"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {clientRedirect},
+			"client_id": {confidentialClient}, "client_secret": {confidentialSecret},
+		}, nil)
+		if status != http.StatusOK {
+			t.Fatalf("client_secret_post for a client_secret_basic client = %d %v", status, body)
+		}
+	})
+
+	t.Run("secret for a private_key_jwt client", func(t *testing.T) {
+		status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}}, basic(jwtClient, confidentialSecret))
 		expectError(t, status, body, http.StatusUnauthorized, "invalid_client")
 	})
 
@@ -221,31 +235,30 @@ func TestPrivateKeyJWT(t *testing.T) {
 		}, nil)
 	}
 
-	assertion := clientAssertion(t, tokenURL, exp, "jti-1", clientEC, "ES256")
+	assertion := clientAssertion(t, testIssuer, exp, "jti-1", clientEC, "ES256")
 	if status, body := send(assertion); status != http.StatusOK || body["access_token"] == nil {
 		t.Fatalf("private_key_jwt = %d %v", status, body)
 	}
 	status, body := send(assertion)
 	expectError(t, status, body, http.StatusUnauthorized, "invalid_client") // replay
 
-	status, body = send(clientAssertion(t, testIssuer, exp, "jti-2", clientEC, "ES256"))
-	if status != http.StatusOK {
-		t.Fatalf("issuer as audience = %d %v", status, body)
-	}
+	// RFC 7523bis: the token endpoint URL is not an acceptable audience.
+	status, body = send(clientAssertion(t, tokenURL, exp, "jti-2", clientEC, "ES256"))
+	expectError(t, status, body, http.StatusUnauthorized, "invalid_client")
 
 	status, body = send(clientAssertion(t, "https://other.example.com/token", exp, "jti-3", clientEC, "ES256"))
 	expectError(t, status, body, http.StatusUnauthorized, "invalid_client") // wrong audience
 
-	status, body = send(clientAssertion(t, tokenURL, e.clock.Now().Add(-time.Hour), "jti-4", clientEC, "ES256"))
+	status, body = send(clientAssertion(t, testIssuer, e.clock.Now().Add(-time.Hour), "jti-4", clientEC, "ES256"))
 	expectError(t, status, body, http.StatusUnauthorized, "invalid_client") // expired
 
-	status, body = send(clientAssertion(t, tokenURL, e.clock.Now().Add(24*time.Hour), "jti-5", clientEC, "ES256"))
+	status, body = send(clientAssertion(t, testIssuer, e.clock.Now().Add(24*time.Hour), "jti-5", clientEC, "ES256"))
 	expectError(t, status, body, http.StatusUnauthorized, "invalid_client") // too long-lived
 
-	status, body = send(clientAssertion(t, tokenURL, exp, "jti-6", ecKey, "ES256"))
+	status, body = send(clientAssertion(t, testIssuer, exp, "jti-6", ecKey, "ES256"))
 	expectError(t, status, body, http.StatusUnauthorized, "invalid_client") // wrong key
 
-	status, body = send(hs256Assertion(t, tokenURL, exp))
+	status, body = send(hs256Assertion(t, testIssuer, exp))
 	expectError(t, status, body, http.StatusUnauthorized, "invalid_client") // symmetric algorithm
 }
 

@@ -69,10 +69,10 @@ func (p *Provider) authenticateClient(r *http.Request, iss *resolvedIssuer, q pa
 		if v := q.get("client_id"); v != "" && v != id {
 			return nil, errInvalidRequest("client_id does not match the Authorization header")
 		}
-		return p.authenticateWithSecret(ctx, iss, id, secret, AuthMethodClientSecretBasic)
+		return p.authenticateWithSecret(ctx, iss, id, secret)
 
 	case hasPost:
-		return p.authenticateWithSecret(ctx, iss, q.get("client_id"), q.get("client_secret"), AuthMethodClientSecretPost)
+		return p.authenticateWithSecret(ctx, iss, q.get("client_id"), q.get("client_secret"))
 
 	case hasAssertion:
 		if q.get("client_assertion_type") != clientAssertionTypeJWT {
@@ -113,12 +113,15 @@ func (p *Provider) lookupAuthenticatingClient(ctx context.Context, iss *resolved
 	return client, nil
 }
 
-func (p *Provider) authenticateWithSecret(ctx context.Context, iss *resolvedIssuer, id, secret string, method AuthMethod) (*Client, *Error) {
+// authenticateWithSecret accepts a client secret sent with either
+// client_secret_basic or client_secret_post. OAuth 2.1 section 2.4.1 requires
+// support for the request body, and both methods carry the same secret.
+func (p *Provider) authenticateWithSecret(ctx context.Context, iss *resolvedIssuer, id, secret string) (*Client, *Error) {
 	client, perr := p.lookupAuthenticatingClient(ctx, iss, id)
 	if perr != nil {
 		return nil, perr
 	}
-	if client.authMethod() != method || !client.verifySecret(secret) {
+	if !client.usesSecret() || !client.verifySecret(secret) {
 		return nil, errInvalidClient("client authentication failed")
 	}
 	return client, nil
@@ -127,10 +130,10 @@ func (p *Provider) authenticateWithSecret(ctx context.Context, iss *resolvedIssu
 // verifyClientAssertion authenticates a private_key_jwt client assertion
 // (RFC 7523 section 2.2 and OpenID Connect Core section 9).
 //
-// The audience must be a single value: the issuer identifier, as current
-// guidance for private_key_jwt recommends, or the token endpoint URL, which
-// OpenID Connect Core specifies. Multi-valued audiences are rejected, so an
-// assertion made for another server cannot be replayed here.
+// The audience must be the issuer identifier as its sole value, as RFC
+// 7523bis requires and OAuth 2.1 section 2.4 adopts. The token endpoint URL
+// is not accepted, so an assertion made for another server cannot be
+// replayed here.
 func (p *Provider) verifyClientAssertion(ctx context.Context, iss *resolvedIssuer, assertion string) (*Client, *Error) {
 	if assertion == "" {
 		return nil, errInvalidClient("client_assertion is required")
@@ -187,7 +190,7 @@ func (p *Provider) verifyClientAssertion(ctx context.Context, iss *resolvedIssue
 	expected := jwt.Expected{
 		Issuer:      client.ID,
 		Subject:     client.ID,
-		AnyAudience: jwt.Audience{iss.url, iss.endpoint(PathToken)},
+		AnyAudience: jwt.Audience{iss.url},
 		Time:        now,
 	}
 	if err := claims.ValidateWithLeeway(expected, assertionLeeway); err != nil {

@@ -26,6 +26,7 @@ func TestClaimsParameterCannotWidenAccess(t *testing.T) {
 		SecretHash:   grantor.HashSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect},
 		Scopes:       []string{"openid", "profile"},
+		PKCE:         grantor.PKCEOptional,
 	})
 	requested := `{"userinfo":{"name":null,"email":null,"phone_number":null,"department":null,"internal_role":null},"id_token":{"email":null}}`
 
@@ -162,6 +163,7 @@ func TestCodeExchangeRechecksClientScopes(t *testing.T) {
 		SecretHash:   grantor.HashSecret(confidentialSecret),
 		RedirectURIs: []string{clientRedirect},
 		Scopes:       []string{"openid"},
+		PKCE:         grantor.PKCEOptional,
 	})
 	status, body := e.exchangeCode(confidentialClient, code, "", basic(confidentialClient, confidentialSecret))
 	expectError(t, status, body, http.StatusBadRequest, "invalid_scope")
