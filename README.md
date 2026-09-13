@@ -11,7 +11,8 @@ grantor implements the protocol; your application keeps control of everything el
 - **OAuth 2.1**: authorization code flow with PKCE (S256, required for every client by default), refresh token rotation with reuse detection, client credentials, exact redirect URI matching
 - **OpenID Connect Core**: ID tokens, UserInfo, `nonce`, `prompt`, `max_age`, `id_token_hint`, `acr`/`amr`, the `claims` parameter, `offline_access`
 - **Discovery**: OpenID Provider metadata and RFC 8414 authorization server metadata, JWKS
-- **Token introspection** (RFC 7662) and **revocation** (RFC 7009)
+- **Access tokens**: opaque by default, JWT access tokens (RFC 9068), or a format of your own; audiences, extra claims and lifetimes per client and per issuance
+- **Token introspection** (RFC 7662) and **revocation** (RFC 7009), for every access token format
 - **Client authentication**: `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none`
 - **Response modes**: `query`, `fragment`, `form_post`; the RFC 9207 `iss` parameter on every authorization response
 - **Native apps**: loopback redirect URIs on any port (RFC 8252)
@@ -162,6 +163,49 @@ Open http://localhost:9002 and sign in as `alice` or `bob` with the password `pa
 
 `examples/internal/e2e` drives both apps through the whole flow in a test. [`examples/lowlevel`](examples/lowlevel) is a provider built from the low-level API (`go run ./lowlevel`, on http://localhost:9003).
 
+## Access tokens
+
+Access tokens are opaque random strings by default. Each client can use JWT access tokens (RFC 9068) instead, which resource servers validate with the issuer's JWKS:
+
+```go
+grantor.Client{
+	ID:                  "web-app",
+	AccessTokenFormat:   grantor.AccessTokenFormatJWT, // or set Config.AccessTokenFormat for all clients
+	Audience:            []string{"https://api.example.com"},
+	AccessTokenLifetime: 10 * time.Minute,
+	// ...
+}
+```
+
+Whatever the format, grantor stores every access token by its hash, so introspection, UserInfo, revocation and `Provider.ValidateAccessToken` (for resource servers in the same process) work the same way. Resource servers that validate JWT access tokens locally do not see revocations, so keep their lifetime short.
+
+`Config.BeforeIssue` shapes each issuance: it can narrow the audience, add claims to the access token and the ID token, change lifetimes, or pick another format:
+
+```go
+cfg.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
+	is.AccessTokenClaims = map[string]any{"tenant": tenantOf(is.Subject)}
+	if is.GrantType == grantor.GrantTypeClientCredentials {
+		is.AccessTokenLifetime = 5 * time.Minute
+	}
+	return nil
+}
+```
+
+Custom formats are functions that receive the token's description and a function that signs with the issuer's keys:
+
+```go
+cfg.AccessTokenFormats = map[grantor.AccessTokenFormat]grantor.AccessTokenEncoder{
+	"scp-jwt": func(ctx context.Context, at *grantor.AccessToken, sign grantor.SignFunc) (string, error) {
+		return sign("JWT", map[string]any{
+			"iss": at.Issuer, "sub": at.Subject, "aud": at.Audience,
+			"scp": at.Scopes, "exp": at.ExpiresAt.Unix(), "jti": at.ID,
+		})
+	},
+}
+```
+
+Approvals and custom grants choose audiences within `Client.Audience` with `Approval.Audience` and `Grant.Audience`.
+
 ## Storage
 
 Implement `grantor.Storage` (authorization requests, tokens, assertion replay protection) and `grantor.ClientStore` for your database, then run the conformance suite:
@@ -193,6 +237,7 @@ OAuth 2.1 is still an Internet-Draft; grantor follows draft-ietf-oauth-v2-1-16. 
 | [RFC 6750: Bearer Token Usage](https://www.rfc-editor.org/rfc/rfc6750) | UserInfo endpoint (Authorization header and form body, not the query string) |
 | [RFC 7636: Proof Key for Code Exchange (PKCE)](https://www.rfc-editor.org/rfc/rfc7636) | `S256` only |
 | [RFC 7009: Token Revocation](https://www.rfc-editor.org/rfc/rfc7009) | Revocation endpoint |
+| [RFC 9068: JWT Profile for OAuth 2.0 Access Tokens](https://www.rfc-editor.org/rfc/rfc9068) | JWT access tokens (`at+jwt`) |
 | [RFC 7662: Token Introspection](https://www.rfc-editor.org/rfc/rfc7662) | Introspection endpoint |
 | [RFC 8414: Authorization Server Metadata](https://www.rfc-editor.org/rfc/rfc8414) | `/.well-known/oauth-authorization-server` |
 | [RFC 9207: Authorization Server Issuer Identification](https://www.rfc-editor.org/rfc/rfc9207) | `iss` in every authorization response |
@@ -208,7 +253,7 @@ OAuth 2.1 is still an Internet-Draft; grantor follows draft-ietf-oauth-v2-1-16. 
 
 ## Roadmap
 
-Pushed authorization requests (RFC 9126), DPoP (RFC 9449), JWT access tokens (RFC 9068), RP-initiated logout, dynamic client registration, and running the OpenID Foundation conformance suite in CI.
+Pushed authorization requests (RFC 9126), resource indicators (RFC 8707), DPoP (RFC 9449), RP-initiated logout, dynamic client registration, and running the OpenID Foundation conformance suite in CI.
 
 ## License
 

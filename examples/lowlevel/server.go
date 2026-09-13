@@ -32,6 +32,10 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 		RedirectURIs: []string{"http://127.0.0.1/callback"},
 		GrantTypes:   []grantor.GrantType{grantor.GrantTypeAuthorizationCode, apiKeyGrant},
 		Scopes:       []string{"openid", "api"},
+		// JWT access tokens (RFC 9068) that the API validates with the JWKS.
+		AccessTokenFormat:   grantor.AccessTokenFormatJWT,
+		Audience:            []string{"https://api.example.com"},
+		AccessTokenLifetime: 10 * time.Minute,
 	})
 	disabledUsers := map[string]bool{"mallory": true}
 
@@ -61,7 +65,8 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 				return &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "the account is disabled"}
 			}
 			logger.InfoContext(ctx, "issuing tokens", "client_id", is.Client.ID, "grant_type", is.GrantType,
-				"subject", is.Subject, "scopes", is.Scopes)
+				"subject", is.Subject, "scopes", is.Scopes, "audience", is.Audience)
+			is.AccessTokenClaims = map[string]any{"tenant": "example"}
 			return nil
 		},
 		Claims: func(ctx context.Context, grant *grantor.Token) (map[string]any, error) {

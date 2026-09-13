@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -91,6 +92,21 @@ func TestLowLevelServer(t *testing.T) {
 	})
 	if status != http.StatusOK || tok["scope"] != "openid api" || tok["id_token"] == nil {
 		t.Fatalf("token = %d %v", status, tok)
+	}
+	parts := strings.Split(tok["access_token"].(string), ".")
+	if len(parts) != 3 {
+		t.Fatalf("access token is not a JWT: %v", tok["access_token"])
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims["aud"] != "https://api.example.com" || claims["tenant"] != "example" || claims["sub"] != "alice" {
+		t.Fatalf("access token claims = %v", claims)
 	}
 
 	if result := authorize("mallory"); result.Get("error") != "access_denied" {

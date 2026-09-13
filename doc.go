@@ -45,6 +45,7 @@
 //     refresh token and client credentials grants
 //   - RFC 7636 PKCE (S256 only; required for every client by default)
 //   - RFC 7009 token revocation and RFC 7662 token introspection
+//   - RFC 9068 JWT access tokens, alongside opaque and custom formats
 //   - RFC 8414 authorization server metadata and RFC 9207 issuer identification
 //   - RFC 8252 loopback redirect URIs for native apps
 //   - OpenID Connect Core 1.0 (code flow), Discovery 1.0 and the Form Post

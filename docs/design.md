@@ -59,7 +59,11 @@ A valid request is saved with a random ID and handed to `Config.Interact`. The a
 
 ### Tokens
 
-Authorization codes, access tokens and refresh tokens are 256-bit random values. Only their SHA-256 hashes are stored, so a database leak does not leak usable tokens, and no server-side secret has to be managed or rotated.
+Authorization codes and refresh tokens are 256-bit random values. Access tokens use the client's format: opaque 256-bit random values by default, JWT access tokens (RFC 9068), or a custom `AccessTokenEncoder`. Only the SHA-256 hashes of token values are stored, so a database leak does not leak usable tokens, and no server-side secret has to be managed or rotated.
+
+A format only decides the value of an access token. Because every access token is stored and looked up by hash, UserInfo, introspection, revocation, grant revocation and `ValidateAccessToken` need no per-format code, and a custom format cannot produce a token that is valid without being stored. Resource servers that validate JWT access tokens locally do not see revocations; the introspection endpoint does.
+
+Each issuance is planned before tokens are minted: the format, audience and lifetimes start from the client registration and `Config`, `BeforeIssue` adjusts them, and grantor checks that the hook only narrowed scopes and audiences, chose a configured format, kept lifetimes positive and did not set protocol claims. The audience is part of the grant (`Approval.Audience`, `Grant.Audience`, within `Client.Audience`) and is carried through refreshes; JWT access tokens without one use the client ID as `aud`.
 
 Every token records its `GrantID`. Tokens issued from one authorization share it, which makes these rules straightforward:
 
