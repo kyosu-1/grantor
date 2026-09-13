@@ -1,0 +1,8 @@
+[
+  {
+    "test-name": "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported",
+    "variant": "*",
+    "configuration-filename": "basic-op.json",
+    "comment": "grantor rejects request objects with request_not_supported, which the specification permits"
+  }
+]

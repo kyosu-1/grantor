@@ -35,7 +35,10 @@ type Config struct {
 	Issuer string
 	// Clients are registered at startup.
 	Clients []grantor.Client
-	Logger  *slog.Logger
+	// AutoConsent skips the consent screen, as if the end-user granted every
+	// requested scope. The conformance suite harness uses it.
+	AutoConsent bool
+	Logger      *slog.Logger
 }
 
 // User is a demo end-user account.
@@ -49,9 +52,10 @@ type User struct {
 // App is the example provider: grantor's protocol endpoints plus login and
 // consent pages.
 type App struct {
-	provider  *grantor.Provider
-	users     map[string]*User // by username
-	dummyHash []byte           // compared against for unknown users
+	provider    *grantor.Provider
+	autoConsent bool
+	users       map[string]*User // by username
+	dummyHash   []byte           // compared against for unknown users
 
 	mu       sync.Mutex
 	sessions map[string]*session // by session cookie value
@@ -82,8 +86,17 @@ func DemoUsers() []*User {
 			Subject: "248289761001", Username: "alice", PasswordHash: hash,
 			Claims: map[string]any{
 				"name": "Alice Liddell", "given_name": "Alice", "family_name": "Liddell",
-				"preferred_username": "alice", "email": "alice@example.com", "email_verified": true,
-				"locale": "en-GB", "updated_at": 1757750400,
+				"middle_name": "Pleasance", "nickname": "Ali", "preferred_username": "alice",
+				"profile": "https://alice.example.com", "picture": "https://alice.example.com/photo.jpg",
+				"website": "https://alice.example.com", "gender": "female", "birthdate": "1852-05-04",
+				"zoneinfo": "Europe/London", "locale": "en-GB", "updated_at": 1757750400,
+				"email": "alice@example.com", "email_verified": true,
+				"phone_number": "+44 20 7946 0000", "phone_number_verified": true,
+				"address": map[string]any{
+					"formatted":      "1 Rabbit Hole\nOxford OX1 1DP\nUnited Kingdom",
+					"street_address": "1 Rabbit Hole", "locality": "Oxford",
+					"postal_code": "OX1 1DP", "country": "United Kingdom",
+				},
 			},
 		},
 		{
@@ -102,7 +115,7 @@ func New(cfg Config, users []*User) (*App, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	a := &App{users: map[string]*User{}, sessions: map[string]*session{}}
+	a := &App{users: map[string]*User{}, sessions: map[string]*session{}, autoConsent: cfg.AutoConsent}
 	for _, u := range users {
 		a.users[u.Username] = u
 	}
@@ -128,11 +141,12 @@ func New(cfg Config, users []*User) (*App, error) {
 			URL:  cfg.Issuer,
 			Keys: []grantor.SigningKey{{ID: "demo-" + time.Now().UTC().Format("20060102"), Signer: key}},
 		},
-		Clients:  store,
-		Storage:  store,
-		Interact: a.interact,
-		Claims:   a.claims,
-		Logger:   cfg.Logger,
+		Clients:   store,
+		Storage:   store,
+		Interact:  a.interact,
+		Claims:    a.claims,
+		ErrorPage: a.errorPage,
+		Logger:    cfg.Logger,
 	})
 	if err != nil {
 		return nil, err
@@ -187,6 +201,10 @@ func (a *App) continueRequest(w http.ResponseWriter, r *http.Request, req *grant
 		return
 	}
 
+	if a.autoConsent {
+		a.approve(w, r, req, s, req.Scopes)
+		return
+	}
 	a.mu.Lock()
 	previous, ok := s.consents[req.ClientID]
 	a.mu.Unlock()
@@ -288,10 +306,17 @@ func (a *App) approve(w http.ResponseWriter, r *http.Request, req *grantor.Autho
 			scopes = append(scopes, scope)
 		}
 	}
+	// Password login is the only method here; report it as assurance level
+	// 1 when the client asks for that level.
+	var acr string
+	if slices.Contains(req.ACRValues, "1") {
+		acr = "1"
+	}
 	err := a.provider.Approve(w, r, req.ID, grantor.Approval{
 		Subject:  s.subject,
 		Scopes:   scopes,
 		AuthTime: s.authTime,
+		ACR:      acr,
 		AMR:      []string{"pwd"},
 	})
 	if err != nil {
@@ -351,6 +376,14 @@ func (a *App) renderStatus(w http.ResponseWriter, status int, name string, data 
 	if err := templates.ExecuteTemplate(w, name, data); err != nil {
 		slog.Error("render template", "template", name, "error", err)
 	}
+}
+
+// errorPage renders authorization errors that cannot be sent to the client,
+// such as an unregistered redirect URI.
+func (a *App) errorPage(w http.ResponseWriter, _ *http.Request, err *grantor.Error) {
+	a.renderStatus(w, http.StatusBadRequest, "error.html", map[string]any{
+		"Message": "The sign-in request is invalid: " + err.Code + ". " + err.Description,
+	})
 }
 
 func (a *App) renderError(w http.ResponseWriter, err error) {
