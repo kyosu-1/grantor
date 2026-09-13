@@ -196,7 +196,7 @@ func (a *App) continueRequest(w http.ResponseWriter, r *http.Request, req *grant
 		(req.HasPrompt("select_account") && s.authTime.Before(req.CreatedAt))
 	if loginNeeded {
 		if req.HasPrompt("none") {
-			a.deny(w, r, req.ID, grantor.ErrLoginRequired)
+			a.deny(w, r, req, grantor.ErrLoginRequired)
 			return
 		}
 		http.Redirect(w, r, "/login?id="+url.QueryEscape(req.ID), http.StatusFound)
@@ -213,7 +213,7 @@ func (a *App) continueRequest(w http.ResponseWriter, r *http.Request, req *grant
 	decided := ok && containsAll(previous.asked, consentItems(req))
 	if !decided || req.HasPrompt("consent") {
 		if req.HasPrompt("none") {
-			a.deny(w, r, req.ID, grantor.ErrConsentRequired)
+			a.deny(w, r, req, grantor.ErrConsentRequired)
 			return
 		}
 		a.render(w, "consent.html", map[string]any{"Request": req, "Claims": req.Claims.Names()})
@@ -250,7 +250,7 @@ func (a *App) submitLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PostFormValue("action") == "cancel" {
-		a.deny(w, r, req.ID, grantor.ErrAccessDenied)
+		a.deny(w, r, req, grantor.ErrAccessDenied)
 		return
 	}
 
@@ -285,7 +285,7 @@ func (a *App) submitConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PostFormValue("action") != "allow" {
-		a.deny(w, r, req.ID, grantor.ErrAccessDenied)
+		a.deny(w, r, req, grantor.ErrAccessDenied)
 		return
 	}
 	var granted []string
@@ -328,7 +328,7 @@ func (a *App) approve(w http.ResponseWriter, r *http.Request, req *grantor.Autho
 	if slices.Contains(req.ACRValues, "1") {
 		acr = "1"
 	}
-	err := a.provider.Approve(w, r, req.ID, grantor.Approval{
+	err := a.provider.Approve(w, r, req, grantor.Approval{
 		Subject:  s.subject,
 		Scopes:   scopes,
 		AuthTime: s.authTime,
@@ -341,8 +341,8 @@ func (a *App) approve(w http.ResponseWriter, r *http.Request, req *grantor.Autho
 	}
 }
 
-func (a *App) deny(w http.ResponseWriter, r *http.Request, id string, reason *grantor.Error) {
-	if err := a.provider.Deny(w, r, id, reason); err != nil {
+func (a *App) deny(w http.ResponseWriter, r *http.Request, req *grantor.AuthorizationRequest, reason *grantor.Error) {
+	if err := a.provider.Deny(w, r, req, reason); err != nil {
 		a.renderError(w, err)
 	}
 }

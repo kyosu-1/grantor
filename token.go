@@ -22,7 +22,7 @@ func (p *Provider) serveToken(w http.ResponseWriter, r *http.Request, iss *resol
 	if !allowMethods(w, r, http.MethodPost) {
 		return
 	}
-	q, perr := parseForm(w, r)
+	q, perr := parseForm(r)
 	if perr != nil {
 		p.writeTokenError(w, r, perr)
 		return

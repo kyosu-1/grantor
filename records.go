@@ -49,6 +49,10 @@ type AuthorizationRequest struct {
 	// client may receive. See [Approval.Claims].
 	Claims *ClaimsRequest `json:"claims,omitempty"`
 
+	// Extra holds the non-empty request parameters that grantor does not
+	// process, such as extension parameters.
+	Extra map[string]string `json:"extra,omitempty"`
+
 	// BindingHash binds the request to the user agent that started it.
 	BindingHash string `json:"binding_hash,omitempty"`
 

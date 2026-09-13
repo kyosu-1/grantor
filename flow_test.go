@@ -78,7 +78,7 @@ func TestAuthorizationCodeFlowWithPKCE(t *testing.T) {
 	}
 
 	authTime := e.clock.Now()
-	rec, err := e.approve(req.ID, grantor.Approval{
+	rec, err := e.approve(req, grantor.Approval{
 		Subject:  "alice",
 		Scopes:   []string{"openid", "profile"}, // the end-user declined email
 		AuthTime: authTime,

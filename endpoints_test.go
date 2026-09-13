@@ -287,7 +287,7 @@ func TestResponseModes(t *testing.T) {
 	q := authParams(publicClient, "openid", newPKCE())
 	q.Set("response_mode", "form_post")
 	req := e.startAuthorization(q)
-	rec, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()})
+	rec, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestResponseModes(t *testing.T) {
 	q = authParams(publicClient, "openid", newPKCE())
 	q.Set("response_mode", "fragment")
 	req = e.startAuthorization(q)
-	rec, err = e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()})
+	rec, err = e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestResponseModes(t *testing.T) {
 	q.Set("response_mode", "form_post")
 	q.Set("state", `"><script>alert(1)</script>`)
 	req = e.startAuthorization(q)
-	rec, _ = e.deny(req.ID, grantor.ErrAccessDenied)
+	rec, _ = e.deny(req, grantor.ErrAccessDenied)
 	if strings.Contains(rec.Body.String(), "<script>alert") {
 		t.Fatalf("form_post does not escape state: %s", rec.Body.String())
 	}
@@ -335,14 +335,14 @@ func TestPromptAndMaxAge(t *testing.T) {
 		if !req.HasPrompt("none") {
 			t.Fatalf("prompt = %v", req.Prompt)
 		}
-		rec, err := e.deny(req.ID, grantor.ErrLoginRequired)
+		rec, err := e.deny(req, grantor.ErrLoginRequired)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if p := redirectParams(t, rec); p.Get("error") != "login_required" || p.Get("state") != "xyz" {
 			t.Fatalf("deny = %v", p)
 		}
-		if _, err := e.deny(req.ID, grantor.ErrLoginRequired); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
+		if _, err := e.deny(req, grantor.ErrLoginRequired); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
 			t.Fatalf("second deny = %v", err)
 		}
 	})
@@ -356,11 +356,11 @@ func TestPromptAndMaxAge(t *testing.T) {
 		if !req.NeedsAuthentication(old) {
 			t.Fatal("NeedsAuthentication(old) = false")
 		}
-		if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: old}); err == nil {
+		if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: old}); err == nil {
 			t.Fatal("Approve accepted a stale authentication")
 		}
 		e.clock.Advance(5 * time.Second)
-		if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
+		if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
 			t.Fatalf("Approve after re-authentication: %v", err)
 		}
 	})
@@ -372,11 +372,11 @@ func TestPromptAndMaxAge(t *testing.T) {
 		if req.MaxAge == nil || *req.MaxAge != 5*time.Minute {
 			t.Fatalf("MaxAge = %v", req.MaxAge)
 		}
-		if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now().Add(-time.Hour)}); err == nil {
+		if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now().Add(-time.Hour)}); err == nil {
 			t.Fatal("Approve accepted an authentication older than max_age")
 		}
 		authTime := e.clock.Now().Add(-time.Minute)
-		rec, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: authTime})
+		rec, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: authTime})
 		if err != nil {
 			t.Fatalf("Approve: %v", err)
 		}
@@ -395,12 +395,12 @@ func TestPromptAndMaxAge(t *testing.T) {
 			{Subject: strings.Repeat("a", 256), Scopes: req.Scopes, AuthTime: e.clock.Now()},
 		}
 		for i, a := range bad {
-			if _, err := e.approve(req.ID, a); err == nil {
+			if _, err := e.approve(req, a); err == nil {
 				t.Errorf("approval %d was accepted", i)
 			}
 		}
-		if _, err := e.deny(req.ID, &grantor.Error{Code: grantor.CodeInvalidGrant}); err == nil {
-			t.Error("Deny accepted a token endpoint error code")
+		if _, err := e.deny(req, &grantor.Error{Code: "bad\"code"}); err == nil {
+			t.Error("Deny accepted an invalid error code")
 		}
 	})
 }
@@ -416,21 +416,21 @@ func TestInteractionBinding(t *testing.T) {
 	if _, err := e.p.AuthorizationRequest(other, req.ID); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
 		t.Fatalf("AuthorizationRequest from another browser = %v", err)
 	}
-	if err := e.p.Approve(httptest.NewRecorder(), other, req.ID, grantor.Approval{Subject: "mallory", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
+	if err := e.p.Approve(httptest.NewRecorder(), other, req, grantor.Approval{Subject: "mallory", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
 		t.Fatalf("Approve from another browser = %v", err)
 	}
 
-	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
 		t.Fatalf("second Approve = %v", err)
 	}
 
 	// Interact can approve within the authorization request itself, before
 	// the user agent has stored the binding cookie.
 	e.interact = func(w http.ResponseWriter, r *http.Request, req *grantor.AuthorizationRequest) {
-		if err := e.p.Approve(w, r, req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
+		if err := e.p.Approve(w, r, req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
 			t.Errorf("Approve inside Interact: %v", err)
 		}
 	}
@@ -444,7 +444,7 @@ func TestInteractionBinding(t *testing.T) {
 
 	req = e.startAuthorization(authParams(publicClient, "openid", newPKCE()))
 	e.clock.Advance(16 * time.Minute)
-	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
 		t.Fatalf("Approve after expiry = %v", err)
 	}
 }
@@ -459,10 +459,10 @@ func TestClaimsParameter(t *testing.T) {
 	if got := req.Claims.Names(); len(got) != 2 || got[0] != "email" || got[1] != "phone_number" {
 		t.Fatalf("Claims.Names() = %v", got)
 	}
-	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), ACR: "urn:loa:1", Claims: req.Claims.Names()}); err == nil {
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), ACR: "urn:loa:1", Claims: req.Claims.Names()}); err == nil {
 		t.Fatal("Approve ignored an unsatisfied essential acr")
 	}
-	rec, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), ACR: "urn:loa:2", Claims: req.Claims.Names()})
+	rec, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), ACR: "urn:loa:2", Claims: req.Claims.Names()})
 	if err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestIDTokenHint(t *testing.T) {
 	if req.RequestedSubject != "alice" {
 		t.Fatalf("RequestedSubject = %q", req.RequestedSubject)
 	}
-	if _, err := e.approve(req.ID, grantor.Approval{Subject: "bob", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err == nil {
+	if _, err := e.approve(req, grantor.Approval{Subject: "bob", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err == nil {
 		t.Fatal("Approve accepted a subject that differs from id_token_hint")
 	}
 
@@ -575,7 +575,7 @@ func TestMultipleIssuers(t *testing.T) {
 			req.AddCookie(c)
 		}
 		rec := httptest.NewRecorder()
-		return rec, p.Approve(rec, req, pending.ID, grantor.Approval{Subject: "alice", Scopes: []string{"openid"}, AuthTime: time.Now()})
+		return rec, p.Approve(rec, req, pending, grantor.Approval{Subject: "alice", Scopes: []string{"openid"}, AuthTime: time.Now()})
 	}
 	if _, err := approveAt("b.example.com"); !errors.Is(err, grantor.ErrAuthorizationRequestNotFound) {
 		t.Fatalf("cross-tenant Approve = %v", err)

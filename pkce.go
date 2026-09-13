@@ -15,15 +15,7 @@ func parsePKCE(client *Client, q params, req *AuthorizationRequest) *Error {
 		if method != "" {
 			return errInvalidRequest("code_challenge_method was sent without code_challenge")
 		}
-		switch client.pkcePolicy() {
-		case PKCEOptional:
-			return nil
-		case PKCEUnlessNonce:
-			if req.IsOpenID() && req.Nonce != "" {
-				return nil
-			}
-		}
-		return errInvalidRequest("code_challenge is required")
+		return checkPKCEPolicy(client, req)
 	}
 	if method != "S256" {
 		return errInvalidRequest("code_challenge_method must be S256")
@@ -35,6 +27,20 @@ func parsePKCE(client *Client, q params, req *AuthorizationRequest) *Error {
 	req.CodeChallenge = challenge
 	req.CodeChallengeMethod = method
 	return nil
+}
+
+// checkPKCEPolicy reports whether the client's PKCE policy allows req, which
+// has no code challenge.
+func checkPKCEPolicy(client *Client, req *AuthorizationRequest) *Error {
+	switch client.pkcePolicy() {
+	case PKCEOptional:
+		return nil
+	case PKCEUnlessNonce:
+		if req.IsOpenID() && req.Nonce != "" {
+			return nil
+		}
+	}
+	return errInvalidRequest("code_challenge is required")
 }
 
 // verifyPKCE checks the code_verifier of a token request against the

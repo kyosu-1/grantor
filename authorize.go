@@ -2,7 +2,6 @@ package grantor
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -28,47 +27,135 @@ const (
 	maxMaxAge = 10 * 365 * 24 * 60 * 60
 )
 
-// ErrAuthorizationRequestNotFound is returned by [Provider.AuthorizationRequest],
-// [Provider.Approve] and [Provider.Deny] when the authorization request does
-// not exist, has expired, was already completed, or belongs to another user
-// agent or issuer.
-var ErrAuthorizationRequestNotFound = errors.New("grantor: authorization request not found")
-
-// Approval is the application's decision to approve an authorization
-// request.
-type Approval struct {
-	// Subject identifies the authenticated end-user. It must be at most 255
-	// ASCII characters, and must never be reassigned to another end-user.
-	Subject string
-
-	// Scopes are the scopes the end-user granted. They must be a subset of
-	// the requested scopes and include openid if it was requested. Per
-	// OpenID Connect Core section 11, grant offline_access only when the
-	// end-user consented to it.
-	Scopes []string
-
-	// AuthTime is when the end-user authenticated. It is required for OpenID
-	// Connect requests.
-	AuthTime time.Time
-
-	// ACR is the authentication context class reference that was satisfied.
-	ACR string
-
-	// AMR lists the authentication methods used.
-	AMR []string
-
-	// Claims lists the claims requested individually with the claims
-	// parameter that the end-user agreed to release, as returned by
-	// [ClaimsRequest.Names]. Claims granted through Scopes need not be
-	// listed.
-	Claims []string
-}
-
 // authorizationTarget is where an authorization response is delivered.
 type authorizationTarget struct {
 	redirectURI string
 	mode        string
 	state       string
+}
+
+// authorizationParams are the authorization request parameters grantor
+// processes; others are kept in AuthorizationRequest.Extra.
+var authorizationParams = map[string]bool{
+	"response_type": true, "client_id": true, "redirect_uri": true, "scope": true, "state": true,
+	"response_mode": true, "code_challenge": true, "code_challenge_method": true, "nonce": true,
+	"display": true, "prompt": true, "max_age": true, "ui_locales": true, "claims_locales": true,
+	"id_token_hint": true, "login_hint": true, "acr_values": true, "claims": true,
+	"request": true, "request_uri": true,
+}
+
+// authorizationError is an error from ParseAuthorizationRequest. A non-nil
+// target means the error may be redirected to the client.
+type authorizationError struct {
+	err    *Error
+	iss    *resolvedIssuer
+	target *authorizationTarget
+}
+
+func (e *authorizationError) Error() string { return e.err.Error() }
+func (e *authorizationError) Unwrap() error { return e.err }
+
+// ParseAuthorizationRequest validates an authorization request and returns
+// it unsaved. Complete it right away with Approve or Deny, or save it with
+// SaveAuthorizationRequest to complete it later, for example after a login
+// page. Write errors with WriteAuthorizationError, which redirects them to
+// the client when that is safe.
+func (p *Provider) ParseAuthorizationRequest(r *http.Request) (*AuthorizationRequest, error) {
+	iss, err := p.issuerFor(r)
+	if err != nil {
+		return nil, &Error{Code: CodeInvalidRequest, Description: "unknown issuer", StatusCode: http.StatusNotFound, cause: err}
+	}
+	return p.parseAuthorization(r, iss)
+}
+
+func (p *Provider) parseAuthorization(r *http.Request, iss *resolvedIssuer) (*AuthorizationRequest, error) {
+	var q params
+	switch r.Method {
+	case http.MethodGet:
+		q = newParams(r.URL.Query())
+	case http.MethodPost:
+		var perr *Error
+		if q, perr = parseForm(r); perr != nil {
+			return nil, &authorizationError{err: perr, iss: iss}
+		}
+	default:
+		return nil, &authorizationError{err: &Error{Code: CodeInvalidRequest, Description: "method not allowed", StatusCode: http.StatusMethodNotAllowed}, iss: iss}
+	}
+	client, target, perr := p.authorizationTarget(r.Context(), iss, q)
+	if perr != nil {
+		return nil, &authorizationError{err: perr, iss: iss}
+	}
+	req, perr := p.parseAuthorizationRequest(iss, client, q, target)
+	if perr != nil {
+		return nil, &authorizationError{err: perr, iss: iss, target: target}
+	}
+	return req, nil
+}
+
+// WriteAuthorizationError writes an error for an authorization request.
+// Errors from ParseAuthorizationRequest that are safe to redirect are sent to
+// the client; all other errors are rendered with Config.ErrorPage. To send an
+// error for a parsed request, use Deny.
+func (p *Provider) WriteAuthorizationError(w http.ResponseWriter, r *http.Request, err error) {
+	var ae *authorizationError
+	if errors.As(err, &ae) && ae.target != nil {
+		if ae.err.Code == CodeServerError {
+			p.logError(r.Context(), "authorization endpoint", ae.err)
+		}
+		p.writeAuthorizationError(w, r, ae.iss, ae.target, ae.err)
+		return
+	}
+	e := asProtocolError(err)
+	if e.Code == CodeServerError {
+		p.logError(r.Context(), "authorization endpoint", err)
+	}
+	p.cfg.ErrorPage(w, r, e)
+}
+
+// SaveAuthorizationRequest stores a request returned by
+// ParseAuthorizationRequest so that it can be completed later with Approve or
+// Deny. It sets req.ID, which identifies the request in
+// AuthorizationRequest, and binds the request to the user agent with a
+// cookie. A saved request cannot be changed; make changes before saving.
+func (p *Provider) SaveAuthorizationRequest(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest) error {
+	iss, err := p.issuerFor(r)
+	if err != nil {
+		return fmt.Errorf("grantor: resolve issuer: %w", err)
+	}
+	if req.ID != "" {
+		return errors.New("grantor: authorization request is already saved")
+	}
+	client, err := p.client(r.Context(), iss, req.ClientID)
+	if err != nil {
+		return fmt.Errorf("grantor: look up client: %w", err)
+	}
+	if err := p.checkRequest(iss, client, req); err != nil {
+		return err
+	}
+	saved := *req
+	saved.ID = randomToken()
+	saved.Claims = p.claimsForClient(client, saved.Claims)
+	var binding string
+	if !p.cfg.DisableInteractionBinding {
+		binding = randomToken()
+		saved.BindingHash = hashToken(binding)
+	}
+	if err := p.cfg.Storage.CreateAuthorizationRequest(r.Context(), &saved); err != nil {
+		return fmt.Errorf("grantor: save authorization request: %w", err)
+	}
+	if binding != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     bindingCookieName(saved.ID, iss.secure),
+			Value:    binding,
+			Path:     "/",
+			MaxAge:   int(p.cfg.Lifetimes.AuthorizationRequest / time.Second),
+			Secure:   iss.secure,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
+	*req = saved
+	return nil
 }
 
 func (p *Provider) serveAuthorization(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer) {
@@ -80,62 +167,31 @@ func (p *Provider) serveAuthorization(w http.ResponseWriter, r *http.Request, is
 		p.cfg.ErrorPage(w, r, errServer(errNoInteract))
 		return
 	}
-	var q params
-	if r.Method == http.MethodPost {
-		var perr *Error
-		if q, perr = parseForm(w, r); perr != nil {
-			p.cfg.ErrorPage(w, r, perr)
-			return
-		}
-	} else {
-		q = newParams(r.URL.Query())
-	}
-
-	client, target, perr := p.authorizationTarget(r.Context(), iss, q)
-	if perr != nil {
-		if perr.Code == CodeServerError {
-			p.logError(r.Context(), "authorization endpoint", perr)
-		}
-		p.cfg.ErrorPage(w, r, perr)
+	req, err := p.parseAuthorization(r, iss)
+	if err != nil {
+		p.WriteAuthorizationError(w, r, err)
 		return
 	}
-
-	req, perr := p.parseAuthorizationRequest(iss, client, q, target)
-	if perr != nil {
-		if perr.Code == CodeServerError {
-			p.logError(r.Context(), "authorization endpoint", perr)
-		}
-		p.writeAuthorizationError(w, r, iss, target, perr)
-		return
-	}
-
-	interactReq := r
-	if !p.cfg.DisableInteractionBinding {
-		binding := randomToken()
-		req.BindingHash = hashToken(binding)
-		cookie := &http.Cookie{
-			Name:     bindingCookieName(req.ID, iss.secure),
-			Value:    binding,
-			Path:     "/",
-			MaxAge:   int(p.cfg.Lifetimes.AuthorizationRequest / time.Second),
-			Secure:   iss.secure,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		}
-		http.SetCookie(w, cookie)
-		// The user agent only sends the cookie from its next request on.
-		// Add it to the current request too, so that Interact can approve
-		// immediately, for example when the end-user already has a session.
-		interactReq = r.Clone(r.Context())
-		interactReq.AddCookie(&http.Cookie{Name: cookie.Name, Value: cookie.Value})
-	}
-	if err := p.cfg.Storage.CreateAuthorizationRequest(r.Context(), req); err != nil {
+	if err := p.SaveAuthorizationRequest(w, r, req); err != nil {
 		p.logError(r.Context(), "save authorization request", err)
-		p.writeAuthorizationError(w, r, iss, target, errServer(err))
+		p.writeAuthorizationError(w, r, iss, targetOf(req), errServer(err))
 		return
+	}
+	interactReq := r
+	if req.BindingHash != "" {
+		// The user agent only sends the binding cookie from its next request
+		// on. Add it to the request passed to Interact, so that
+		// AuthorizationRequest also works there.
+		name := bindingCookieName(req.ID, iss.secure)
+		interactReq = r.Clone(r.Context())
+		interactReq.AddCookie(&http.Cookie{Name: name, Value: bindingFromResponse(w, name)})
 	}
 	reqCopy := *req
 	p.cfg.Interact(w, interactReq, &reqCopy)
+}
+
+func targetOf(req *AuthorizationRequest) *authorizationTarget {
+	return &authorizationTarget{redirectURI: req.RedirectURI, mode: req.ResponseMode, state: req.State}
 }
 
 // authorizationTarget authenticates the client_id and redirect_uri of an
@@ -234,7 +290,6 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 
 	now := p.now()
 	req := &AuthorizationRequest{
-		ID:                   randomToken(),
 		Issuer:               iss.url,
 		ClientID:             client.ID,
 		RedirectURI:          target.redirectURI,
@@ -250,6 +305,15 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 		ACRValues:            splitSpaces(q.get("acr_values")),
 		CreatedAt:            now,
 		ExpiresAt:            now.Add(p.cfg.Lifetimes.AuthorizationRequest),
+	}
+
+	for name, v := range q.values {
+		if !authorizationParams[name] {
+			if req.Extra == nil {
+				req.Extra = map[string]string{}
+			}
+			req.Extra[name] = v
+		}
 	}
 
 	// OpenID Connect Core section 3.1.2.1: scope values that are not
@@ -364,220 +428,6 @@ func validScopeToken(s string) bool {
 		}
 	}
 	return s != ""
-}
-
-// AuthorizationRequest returns the pending authorization request with the
-// given ID, so that the application can show the client and the requested
-// scopes to the end-user. r must be a request from the user agent that
-// started the authorization request.
-func (p *Provider) AuthorizationRequest(r *http.Request, id string) (*AuthorizationRequest, error) {
-	_, req, err := p.pendingRequest(r, id)
-	if err != nil {
-		return nil, err
-	}
-	return req, nil
-}
-
-func (p *Provider) pendingRequest(r *http.Request, id string) (*resolvedIssuer, *AuthorizationRequest, error) {
-	iss, err := p.issuerFor(r)
-	if err != nil {
-		return nil, nil, fmt.Errorf("grantor: resolve issuer: %w", err)
-	}
-	if id == "" {
-		return nil, nil, ErrAuthorizationRequestNotFound
-	}
-	req, err := p.cfg.Storage.AuthorizationRequest(r.Context(), id)
-	if errors.Is(err, ErrNotFound) {
-		return nil, nil, ErrAuthorizationRequestNotFound
-	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("grantor: load authorization request: %w", err)
-	}
-	if req.ID != id || req.Issuer != iss.url || !p.now().Before(req.ExpiresAt) {
-		return nil, nil, ErrAuthorizationRequestNotFound
-	}
-	if req.BindingHash != "" {
-		c, err := r.Cookie(bindingCookieName(req.ID, iss.secure))
-		if err != nil || subtle.ConstantTimeCompare([]byte(hashToken(c.Value)), []byte(req.BindingHash)) != 1 {
-			return nil, nil, ErrAuthorizationRequestNotFound
-		}
-	}
-	return iss, req, nil
-}
-
-// Approve completes the authorization request with the given ID and
-// redirects the user agent back to the client with an authorization code.
-//
-// If Approve returns an error, nothing has been written to w. The error
-// describes why the approval is not acceptable, for example because the
-// end-user must authenticate again; see
-// [AuthorizationRequest.NeedsAuthentication].
-func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, id string, a Approval) error {
-	iss, req, err := p.pendingRequest(r, id)
-	if err != nil {
-		return err
-	}
-	scopes, claims, err := p.validateApproval(req, &a)
-	if err != nil {
-		return err
-	}
-	client, err := p.client(r.Context(), iss, req.ClientID)
-	if err != nil {
-		return fmt.Errorf("grantor: look up client: %w", err)
-	}
-	if !client.matchRedirectURI(req.RedirectURI) {
-		return fmt.Errorf("grantor: redirect URI is no longer registered for client %q", client.ID)
-	}
-	if err := p.completeRequest(r, req); err != nil {
-		return err
-	}
-
-	now := p.now()
-	code := randomToken()
-	t := &Token{
-		Hash:                 hashToken(code),
-		Type:                 TokenTypeAuthorizationCode,
-		GrantID:              randomToken(),
-		Issuer:               iss.url,
-		ClientID:             req.ClientID,
-		Subject:              a.Subject,
-		Scopes:               scopes,
-		AuthTime:             a.AuthTime,
-		ACR:                  a.ACR,
-		AMR:                  a.AMR,
-		Claims:               claims,
-		RedirectURI:          req.RedirectURI,
-		RedirectURIInRequest: req.RedirectURIInRequest,
-		Nonce:                req.Nonce,
-		CodeChallenge:        req.CodeChallenge,
-		CodeChallengeMethod:  req.CodeChallengeMethod,
-		CreatedAt:            now,
-		ExpiresAt:            now.Add(p.cfg.Lifetimes.AuthorizationCode),
-	}
-	target := &authorizationTarget{redirectURI: req.RedirectURI, mode: req.ResponseMode, state: req.State}
-	if err := p.cfg.Storage.CreateToken(r.Context(), t); err != nil {
-		p.logError(r.Context(), "save authorization code", err)
-		p.writeAuthorizationError(w, r, iss, target, errServer(err))
-		return nil
-	}
-	p.clearBinding(w, req, iss)
-	p.writeAuthorizationResponse(w, r, iss, target, url.Values{"code": {code}})
-	return nil
-}
-
-// Deny completes the authorization request with the given ID and redirects
-// the user agent back to the client with an error, such as
-// [ErrAccessDenied] or, for prompt=none requests, [ErrLoginRequired].
-//
-// If Deny returns an error, nothing has been written to w.
-func (p *Provider) Deny(w http.ResponseWriter, r *http.Request, id string, reason *Error) error {
-	if reason == nil {
-		reason = ErrAccessDenied
-	}
-	switch reason.Code {
-	case CodeAccessDenied, CodeLoginRequired, CodeConsentRequired, CodeInteractionRequired,
-		CodeAccountSelectionRequired, CodeTemporarilyUnavailable, CodeServerError, CodeInvalidScope:
-	default:
-		return fmt.Errorf("grantor: %q cannot be used to deny an authorization request", reason.Code)
-	}
-	iss, req, err := p.pendingRequest(r, id)
-	if err != nil {
-		return err
-	}
-	if err := p.completeRequest(r, req); err != nil {
-		return err
-	}
-	p.clearBinding(w, req, iss)
-	target := &authorizationTarget{redirectURI: req.RedirectURI, mode: req.ResponseMode, state: req.State}
-	p.writeAuthorizationError(w, r, iss, target, reason)
-	return nil
-}
-
-// completeRequest deletes a pending request so it cannot be completed twice.
-func (p *Provider) completeRequest(r *http.Request, req *AuthorizationRequest) error {
-	err := p.cfg.Storage.DeleteAuthorizationRequest(r.Context(), req.ID)
-	if errors.Is(err, ErrNotFound) {
-		return ErrAuthorizationRequestNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("grantor: delete authorization request: %w", err)
-	}
-	return nil
-}
-
-// validateApproval checks an approval against its request and returns the
-// granted scopes and the approved part of the claims request.
-func (p *Provider) validateApproval(req *AuthorizationRequest, a *Approval) ([]string, *ClaimsRequest, error) {
-	if a.Subject == "" || len(a.Subject) > 255 {
-		return nil, nil, errors.New("grantor: approval subject must be 1 to 255 characters")
-	}
-	for i := 0; i < len(a.Subject); i++ {
-		if a.Subject[i] < 0x20 || a.Subject[i] > 0x7e {
-			return nil, nil, errors.New("grantor: approval subject must be printable ASCII")
-		}
-	}
-	var scopes []string
-	for _, s := range a.Scopes {
-		if !req.HasScope(s) {
-			return nil, nil, fmt.Errorf("grantor: approved scope %q was not requested", s)
-		}
-		if !slices.Contains(scopes, s) {
-			scopes = append(scopes, s)
-		}
-	}
-	requestedClaims := req.Claims.Names()
-	for _, c := range a.Claims {
-		if !slices.Contains(requestedClaims, c) {
-			return nil, nil, fmt.Errorf("grantor: approved claim %q was not requested", c)
-		}
-	}
-	if !req.IsOpenID() {
-		return scopes, nil, nil
-	}
-	if !slices.Contains(scopes, "openid") {
-		return nil, nil, errors.New("grantor: the openid scope must be approved for OpenID Connect requests")
-	}
-	now := p.now()
-	if a.AuthTime.IsZero() || a.AuthTime.After(now.Add(time.Minute)) {
-		return nil, nil, errors.New("grantor: approval AuthTime must be set and not in the future")
-	}
-	if req.needsAuthentication(a.AuthTime, now) {
-		return nil, nil, errors.New("grantor: the end-user must authenticate again (prompt=login or max_age)")
-	}
-	if req.RequestedSubject != "" && req.RequestedSubject != a.Subject {
-		return nil, nil, errors.New("grantor: the authenticated end-user is not the one the client requested")
-	}
-	if values, essential := requestedEssentialACR(req.Claims); essential {
-		if a.ACR == "" || (len(values) > 0 && !slices.Contains(values, a.ACR)) {
-			return nil, nil, errors.New("grantor: the essential acr claim request is not satisfied")
-		}
-	}
-	return scopes, req.Claims.filter(func(name string) bool { return slices.Contains(a.Claims, name) }), nil
-}
-
-// bindingCookieName returns the name of the cookie that binds an
-// authorization request to the user agent. On https the __Host- prefix
-// stops sibling subdomains from setting the cookie.
-func bindingCookieName(requestID string, secure bool) string {
-	name := "grantor_" + hashToken(requestID)[:16]
-	if secure {
-		name = "__Host-" + name
-	}
-	return name
-}
-
-func (p *Provider) clearBinding(w http.ResponseWriter, req *AuthorizationRequest, iss *resolvedIssuer) {
-	if req.BindingHash == "" {
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     bindingCookieName(req.ID, iss.secure),
-		Path:     "/",
-		MaxAge:   -1,
-		Secure:   iss.secure,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
 }
 
 func (p *Provider) writeAuthorizationError(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer, target *authorizationTarget, e *Error) {

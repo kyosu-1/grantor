@@ -1,8 +1,11 @@
 package grantor_test
 
 import (
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"slices"
 	"testing"
 
 	"github.com/kyosu-1/grantor"
@@ -53,7 +56,7 @@ func TestCustomRouterAndPaths(t *testing.T) {
 	if e.pending == nil {
 		t.Fatalf("authorization = %d %s", rec.Code, rec.Body.String())
 	}
-	rec, err := e.approve(e.pending.ID, grantor.Approval{Subject: "alice", Scopes: e.pending.Scopes, AuthTime: e.clock.Now()})
+	rec, err := e.approve(e.pending, grantor.Approval{Subject: "alice", Scopes: e.pending.Scopes, AuthTime: e.clock.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,5 +106,144 @@ func TestEndpointsValidation(t *testing.T) {
 		Clients: store, Storage: store,
 	}); err != nil {
 		t.Fatalf("New without Interact: %v", err)
+	}
+}
+
+func TestCustomAuthorizationHandler(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		req, err := e.p.ParseAuthorizationRequest(r)
+		if err != nil {
+			e.p.WriteAuthorizationError(w, r, err)
+			return
+		}
+		// Policy: this deployment never grants email, and an extension
+		// parameter selects the tenant.
+		req.Scopes = slices.DeleteFunc(req.Scopes, func(s string) bool { return s == "email" })
+		if req.Extra["tenant"] == "blocked" {
+			if err := e.p.Deny(w, r, req, &grantor.Error{Code: "tenant_blocked", URI: "https://op.example.com/blocked"}); err != nil {
+				t.Errorf("Deny: %v", err)
+			}
+			return
+		}
+		if req.LoginHint == "trusted" {
+			// Complete immediately, without saving the request.
+			if err := e.p.Approve(w, r, req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
+				t.Errorf("Approve: %v", err)
+			}
+			return
+		}
+		if err := e.p.SaveAuthorizationRequest(w, r, req); err != nil {
+			t.Errorf("SaveAuthorizationRequest: %v", err)
+			return
+		}
+		e.pending = req
+	})
+	mux.Handle("/", e.p)
+	e.handler = mux
+
+	q := authParams(confidentialClient, "openid email profile", pkcePair{})
+	q.Set("login_hint", "trusted")
+	params := redirectParams(t, e.get("/authorize", q))
+	status, body := e.exchangeCode(confidentialClient, params.Get("code"), "", basic(confidentialClient, confidentialSecret))
+	if status != http.StatusOK || body["scope"] != "openid profile" {
+		t.Fatalf("immediate approval = %d %v", status, body)
+	}
+
+	q = authParams(confidentialClient, "openid", pkcePair{})
+	q.Set("tenant", "blocked")
+	params = redirectParams(t, e.get("/authorize", q))
+	if params.Get("error") != "tenant_blocked" || params.Get("error_uri") != "https://op.example.com/blocked" || params.Get("state") != "xyz" {
+		t.Fatalf("custom denial = %v", params)
+	}
+
+	e.pending = nil
+	e.get("/authorize", authParams(confidentialClient, "openid email", pkcePair{}))
+	if e.pending == nil || e.pending.ID == "" || slices.Contains(e.pending.Scopes, "email") {
+		t.Fatalf("saved request = %+v", e.pending)
+	}
+	loaded, err := e.p.AuthorizationRequest(e.appRequest(http.MethodGet, "/login"), e.pending.ID)
+	if err != nil || slices.Contains(loaded.Scopes, "email") {
+		t.Fatalf("loaded = %+v, %v", loaded, err)
+	}
+	if _, err := e.approve(loaded, grantor.Approval{Subject: "alice", Scopes: loaded.Scopes, AuthTime: e.clock.Now()}); err != nil {
+		t.Fatalf("Approve saved request: %v", err)
+	}
+
+	// Parse errors that must not be redirected are rendered as a page.
+	q = authParams(confidentialClient, "openid", pkcePair{})
+	q.Set("redirect_uri", "https://attacker.example.com/cb")
+	if rec := e.get("/authorize", q); rec.Code != http.StatusBadRequest || rec.Header().Get("Location") != "" {
+		t.Fatalf("unregistered redirect URI = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestApproveSavedRequestInSameHTTPRequest(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	e.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := e.p.ParseAuthorizationRequest(r)
+		if err != nil {
+			e.p.WriteAuthorizationError(w, r, err)
+			return
+		}
+		if err := e.p.SaveAuthorizationRequest(w, r, req); err != nil {
+			t.Errorf("SaveAuthorizationRequest: %v", err)
+			return
+		}
+		if err := e.p.Approve(w, r, req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err != nil {
+			t.Errorf("Approve in the same request: %v", err)
+		}
+	})
+	if p := redirectParams(t, e.get("/authorize", authParams(publicClient, "openid", newPKCE()))); p.Get("code") == "" {
+		t.Fatalf("response = %v", p)
+	}
+}
+
+func TestSavedRequestCannotBeModified(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	req := e.startAuthorization(authParams(publicClient, "openid", newPKCE()))
+	req.RedirectURI = "http://127.0.0.1:9999/native"
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); !errors.Is(err, grantor.ErrAuthorizationRequestModified) {
+		t.Fatalf("Approve modified request = %v", err)
+	}
+}
+
+func TestUnsavedRequestIsRevalidated(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	parse := func() *grantor.AuthorizationRequest {
+		t.Helper()
+		r := httpGet(testIssuer + "/authorize?" + authParams(publicClient, "openid", newPKCE()).Encode())
+		req, err := e.p.ParseAuthorizationRequest(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	approval := grantor.Approval{Subject: "alice", Scopes: []string{"openid"}, AuthTime: e.clock.Now()}
+	for name, modify := range map[string]func(*grantor.AuthorizationRequest){
+		"unregistered redirect URI": func(r *grantor.AuthorizationRequest) { r.RedirectURI = "https://attacker.example.com/cb" },
+		"code challenge removed":    func(r *grantor.AuthorizationRequest) { r.CodeChallenge, r.CodeChallengeMethod = "", "" },
+		"scope not registered":      func(r *grantor.AuthorizationRequest) { r.Scopes = append(r.Scopes, "admin") },
+		"other issuer":              func(r *grantor.AuthorizationRequest) { r.Issuer = "https://other.example.com" },
+		"implicit flow":             func(r *grantor.AuthorizationRequest) { r.ResponseType = "token" },
+	} {
+		req := parse()
+		modify(req)
+		rec := httptest.NewRecorder()
+		if err := e.p.Approve(rec, httpGet(testIssuer+"/authorize"), req, approval); err == nil {
+			t.Errorf("%s: Approve succeeded", name)
+		}
+		if rec.Header().Get("Location") != "" {
+			t.Errorf("%s: a response was written", name)
+		}
+	}
+	// The unmodified request is accepted.
+	if err := e.p.Approve(httptest.NewRecorder(), httpGet(testIssuer+"/authorize"), parse(), approval); err != nil {
+		t.Fatalf("Approve: %v", err)
 	}
 }

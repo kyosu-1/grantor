@@ -35,7 +35,7 @@ func TestClaimsParameterCannotWidenAccess(t *testing.T) {
 		q := authParams(clientID, "openid", pkcePair{})
 		q.Set("claims", requested)
 		req := e.startAuthorization(q)
-		rec, err := e.approve(req.ID, approve(req))
+		rec, err := e.approve(req, approve(req))
 		if err != nil {
 			t.Fatalf("Approve: %v", err)
 		}
@@ -81,7 +81,7 @@ func TestClaimsParameterCannotWidenAccess(t *testing.T) {
 	// Approving a claim that was not requested is an error.
 	q := authParams(confidentialClient, "openid", pkcePair{})
 	req := e.startAuthorization(q)
-	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), Claims: []string{"email"}}); err == nil {
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), Claims: []string{"email"}}); err == nil {
 		t.Fatal("Approve accepted a claim that was not requested")
 	}
 }
@@ -96,7 +96,7 @@ func TestRequestedSubjectClaim(t *testing.T) {
 	if req.RequestedSubject != "bob" {
 		t.Fatalf("RequestedSubject = %q", req.RequestedSubject)
 	}
-	if _, err := e.approve(req.ID, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err == nil {
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now()}); err == nil {
 		t.Fatal("Approve accepted an end-user other than the requested sub")
 	}
 

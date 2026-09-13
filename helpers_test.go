@@ -267,20 +267,20 @@ func (e *env) appRequest(method, path string) *http.Request {
 	return req
 }
 
-func (e *env) approve(id string, a grantor.Approval) (*httptest.ResponseRecorder, error) {
+func (e *env) approve(ar *grantor.AuthorizationRequest, a grantor.Approval) (*httptest.ResponseRecorder, error) {
 	e.t.Helper()
 	req := e.appRequest(http.MethodPost, "/login")
 	rec := httptest.NewRecorder()
-	err := e.p.Approve(rec, req, id, a)
+	err := e.p.Approve(rec, req, ar, a)
 	e.jar.SetCookies(req.URL, rec.Result().Cookies())
 	return rec, err
 }
 
-func (e *env) deny(id string, reason *grantor.Error) (*httptest.ResponseRecorder, error) {
+func (e *env) deny(ar *grantor.AuthorizationRequest, reason *grantor.Error) (*httptest.ResponseRecorder, error) {
 	e.t.Helper()
 	req := e.appRequest(http.MethodPost, "/login")
 	rec := httptest.NewRecorder()
-	err := e.p.Deny(rec, req, id, reason)
+	err := e.p.Deny(rec, req, ar, reason)
 	return rec, err
 }
 
@@ -347,7 +347,7 @@ func (e *env) login(q url.Values, scopes []string) string {
 	if scopes == nil {
 		scopes = req.Scopes
 	}
-	rec, err := e.approve(req.ID, grantor.Approval{
+	rec, err := e.approve(req, grantor.Approval{
 		Subject:  "alice",
 		Scopes:   scopes,
 		AuthTime: e.clock.Now(),
