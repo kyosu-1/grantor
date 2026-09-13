@@ -46,12 +46,12 @@ func (p *Provider) serveDiscovery(w http.ResponseWriter, r *http.Request, iss *r
 
 	m := metadata{
 		Issuer:                                     iss.url,
-		AuthorizationEndpoint:                      iss.endpoint(PathAuthorization),
-		TokenEndpoint:                              iss.endpoint(PathToken),
-		UserInfoEndpoint:                           iss.endpoint(PathUserInfo),
-		JWKSURI:                                    iss.endpoint(PathJWKS),
-		IntrospectionEndpoint:                      iss.endpoint(PathIntrospection),
-		RevocationEndpoint:                         iss.endpoint(PathRevocation),
+		AuthorizationEndpoint:                      iss.endpoint(p.cfg.Endpoints.Authorization),
+		TokenEndpoint:                              iss.endpoint(p.cfg.Endpoints.Token),
+		UserInfoEndpoint:                           iss.endpoint(p.cfg.Endpoints.UserInfo),
+		JWKSURI:                                    iss.endpoint(p.cfg.Endpoints.JWKS),
+		IntrospectionEndpoint:                      iss.endpoint(p.cfg.Endpoints.Introspection),
+		RevocationEndpoint:                         iss.endpoint(p.cfg.Endpoints.Revocation),
 		ScopesSupported:                            p.supportedScopes(),
 		ResponseTypesSupported:                     []string{"code"},
 		ResponseModesSupported:                     []string{responseModeQuery, responseModeFragment, responseModeFormPost},

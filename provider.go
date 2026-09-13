@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Endpoint paths, relative to the issuer URL.
+// Default endpoint paths, relative to the issuer URL. See [Endpoints].
 const (
 	PathAuthorization = "/authorize"
 	PathToken         = "/token"
@@ -80,7 +80,9 @@ type Config struct {
 	// Storage persists authorization requests and tokens.
 	Storage Storage
 
-	// Interact is called for every valid authorization request.
+	// Interact is called by ServeAuthorization, and so by ServeHTTP, for
+	// every valid authorization request. It is not used by applications that
+	// write their own authorization endpoint.
 	Interact InteractionFunc
 
 	// Claims provides end-user claims for ID tokens and the UserInfo endpoint.
@@ -97,6 +99,9 @@ type Config struct {
 	IDTokenScopeClaims bool
 
 	Lifetimes Lifetimes
+
+	// Endpoints configures the paths of the protocol endpoints.
+	Endpoints Endpoints
 
 	// DisableInteractionBinding stops binding authorization requests to the
 	// user agent with a cookie. Only disable it when the login pages run on
@@ -139,13 +144,14 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.Storage == nil {
 		return nil, errors.New("grantor: Config.Storage is required")
 	}
-	if cfg.Interact == nil {
-		return nil, errors.New("grantor: Config.Interact is required")
-	}
 	for scope := range cfg.ScopeClaims {
 		if scope == "openid" || scope == "offline_access" {
 			return nil, fmt.Errorf("grantor: Config.ScopeClaims cannot redefine the %q scope", scope)
 		}
+	}
+	cfg.Endpoints.setDefaults()
+	if err := cfg.Endpoints.validate(); err != nil {
+		return nil, fmt.Errorf("grantor: %w", err)
 	}
 	setDefault(&cfg.Lifetimes.AuthorizationRequest, 15*time.Minute)
 	setDefault(&cfg.Lifetimes.AuthorizationCode, time.Minute)
@@ -218,14 +224,13 @@ func (p *Provider) issuerFor(r *http.Request) (*resolvedIssuer, error) {
 }
 
 // ServeHTTP routes requests to the protocol endpoints of the issuer the
-// request belongs to.
+// request belongs to, at the paths configured in Config.Endpoints, and serves
+// the discovery documents at their well-known locations.
 func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	iss, err := p.issuerFor(r)
-	if err != nil {
-		p.cfg.Logger.DebugContext(r.Context(), "grantor: no issuer for request", "path", r.URL.Path, "error", err)
-		http.NotFound(w, r)
-		return
-	}
+	p.withIssuer(w, r, p.route)
+}
+
+func (p *Provider) route(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer) {
 	path := r.URL.EscapedPath()
 	if path == pathOAuthMetadata+iss.basePath {
 		p.serveDiscovery(w, r, iss)
@@ -236,18 +241,19 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	e := &p.cfg.Endpoints
 	switch rel {
-	case PathAuthorization:
+	case e.Authorization:
 		p.serveAuthorization(w, r, iss)
-	case PathToken:
+	case e.Token:
 		p.serveToken(w, r, iss)
-	case PathUserInfo:
+	case e.UserInfo:
 		p.serveUserInfo(w, r, iss)
-	case PathIntrospection:
+	case e.Introspection:
 		p.serveIntrospection(w, r, iss)
-	case PathRevocation:
+	case e.Revocation:
 		p.serveRevocation(w, r, iss)
-	case PathJWKS:
+	case e.JWKS:
 		p.serveJWKS(w, r, iss)
 	case PathOpenIDConfig:
 		p.serveDiscovery(w, r, iss)

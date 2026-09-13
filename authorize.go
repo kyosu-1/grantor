@@ -75,6 +75,11 @@ func (p *Provider) serveAuthorization(w http.ResponseWriter, r *http.Request, is
 	if !allowMethods(w, r, http.MethodGet, http.MethodPost) {
 		return
 	}
+	if p.cfg.Interact == nil {
+		p.logError(r.Context(), "authorization endpoint", errNoInteract)
+		p.cfg.ErrorPage(w, r, errServer(errNoInteract))
+		return
+	}
 	var q params
 	if r.Method == http.MethodPost {
 		var perr *Error

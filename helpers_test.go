@@ -16,6 +16,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -76,6 +77,7 @@ func (c *clock) Advance(d time.Duration) {
 type env struct {
 	t        *testing.T
 	p        *grantor.Provider
+	handler  http.Handler
 	store    *memory.Store
 	clock    *clock
 	issuer   string
@@ -83,6 +85,7 @@ type env struct {
 	pending  *grantor.AuthorizationRequest
 	claims   map[string]map[string]any
 	interact grantor.InteractionFunc
+	opts     []envOption
 }
 
 type envOption func(*grantor.Config)
@@ -95,6 +98,7 @@ func newEnv(t *testing.T, opts ...envOption) *env {
 		store:  memory.New(),
 		clock:  &clock{now: time.Now().Truncate(time.Second)},
 		issuer: testIssuer,
+		opts:   opts,
 		claims: map[string]map[string]any{
 			"alice": {
 				"name":           "Alice Example",
@@ -107,6 +111,14 @@ func newEnv(t *testing.T, opts ...envOption) *env {
 		},
 	}
 	e.jar, _ = cookiejar.New(nil)
+	e.p = e.build()
+	e.handler = e.p
+	return e
+}
+
+// build creates a provider for e with the options of newEnv and extra.
+func (e *env) build(extra ...envOption) *grantor.Provider {
+	e.t.Helper()
 	cfg := grantor.Config{
 		Issuer: &grantor.Issuer{
 			URL: testIssuer,
@@ -131,16 +143,23 @@ func newEnv(t *testing.T, opts ...envOption) *env {
 		ScopeClaims: map[string][]string{"org": {"department"}},
 		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	for _, o := range opts {
+	for _, o := range append(slices.Clone(e.opts), extra...) {
 		o(&cfg)
 	}
 	p, err := grantor.New(cfg)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		e.t.Fatalf("New: %v", err)
 	}
 	grantor.SetClock(p, e.clock.Now)
-	e.p = p
-	return e
+	return p
+}
+
+// mustProvider replaces the provider of e with one that also applies opts.
+func mustProvider(t *testing.T, e *env, opts ...envOption) *grantor.Provider {
+	t.Helper()
+	p := e.build(opts...)
+	e.handler = p
+	return p
 }
 
 const (
@@ -212,7 +231,7 @@ func (e *env) do(req *http.Request) *httptest.ResponseRecorder {
 		req.AddCookie(c)
 	}
 	rec := httptest.NewRecorder()
-	e.p.ServeHTTP(rec, req)
+	e.handler.ServeHTTP(rec, req)
 	e.jar.SetCookies(req.URL, rec.Result().Cookies())
 	return rec
 }

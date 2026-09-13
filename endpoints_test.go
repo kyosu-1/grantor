@@ -640,8 +640,7 @@ func TestNewValidatesConfig(t *testing.T) {
 		"duplicate kid": func(c *grantor.Config) {
 			c.Issuer.Keys = append(c.Issuer.Keys, grantor.SigningKey{ID: "k", Signer: ecKey})
 		},
-		"no storage":  func(c *grantor.Config) { c.Storage = nil },
-		"no interact": func(c *grantor.Config) { c.Interact = nil },
+		"no storage": func(c *grantor.Config) { c.Storage = nil },
 		"issuer and resolver": func(c *grantor.Config) {
 			c.IssuerFor = func(*http.Request) (*grantor.Issuer, error) { return nil, nil }
 		},
