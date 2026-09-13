@@ -126,9 +126,10 @@ type Client struct {
 	AccessTokenSigningAlg string
 
 	// Audience lists the audiences, such as resource server URLs, that
-	// access tokens of the client may be issued for. Unless an approval, a
-	// custom grant or Config.BeforeIssue narrows it, tokens are issued for
-	// all of them. JWT access tokens need at least one audience.
+	// access tokens of the client may be issued for. Approvals and custom
+	// grants select from it (see [Approval.Audience] and [Grant.Audience]),
+	// the client credentials grant uses all of it, and Config.BeforeIssue
+	// may narrow any issuance. JWT access tokens need at least one audience.
 	Audience []string
 
 	// Lifetimes of tokens issued to the client. Zero values use
@@ -136,6 +137,18 @@ type Client struct {
 	AccessTokenLifetime  time.Duration
 	RefreshTokenLifetime time.Duration
 	IDTokenLifetime      time.Duration
+}
+
+// clone returns a copy of c that shares no slices with it.
+func (c *Client) clone() *Client {
+	out := *c
+	out.SecretHash = slices.Clone(c.SecretHash)
+	out.JWKS = slices.Clone(c.JWKS)
+	out.RedirectURIs = slices.Clone(c.RedirectURIs)
+	out.GrantTypes = slices.Clone(c.GrantTypes)
+	out.Scopes = slices.Clone(c.Scopes)
+	out.Audience = slices.Clone(c.Audience)
+	return &out
 }
 
 // HashClientSecret returns the value to store in [Client.SecretHash].

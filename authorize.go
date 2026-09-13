@@ -136,7 +136,7 @@ func (p *Provider) WriteAuthorizationError(w http.ResponseWriter, r *http.Reques
 func (p *Provider) SaveAuthorizationRequest(w http.ResponseWriter, r *http.Request, req *AuthorizationRequest) error {
 	iss, err := p.issuerFor(r)
 	if err != nil {
-		return fmt.Errorf("grantor: resolve issuer: %w", err)
+		return issuerError(err)
 	}
 	if req.ID != "" {
 		return errors.New("grantor: authorization request is already saved")

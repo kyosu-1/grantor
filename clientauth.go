@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -216,8 +217,9 @@ func (p *Provider) verifyClientAssertion(ctx context.Context, iss *resolvedIssue
 func assertionKey(issuer, clientID, jti string) string {
 	h := sha256.New()
 	for _, part := range []string{issuer, clientID, jti} {
+		// Length prefixes keep the encoding unambiguous for any part values.
+		h.Write(binary.BigEndian.AppendUint64(nil, uint64(len(part))))
 		h.Write([]byte(part))
-		h.Write([]byte{0})
 	}
 	return "client-assertion:" + base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }

@@ -72,8 +72,17 @@ func TestIssuerForErrors(t *testing.T) {
 
 		rec = httptest.NewRecorder()
 		p.ServeToken(rec, httptest.NewRequest(http.MethodPost, "https://"+host+grantor.PathToken, strings.NewReader("grant_type=client_credentials")))
+		if rec.Code != want || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+			t.Errorf("%s: token endpoint = %d %q, want %d with a JSON error", host, rec.Code, rec.Header().Get("Content-Type"), want)
+		}
+
+		// The authorization-side building blocks classify issuer errors the
+		// same way, so WriteAuthorizationError picks the right status.
+		_, err = p.AuthorizationRequest(httptest.NewRequest(http.MethodGet, "https://"+host+"/login", nil), "id")
+		rec = httptest.NewRecorder()
+		p.WriteAuthorizationError(rec, httptest.NewRequest(http.MethodGet, "https://"+host+"/login", nil), err)
 		if rec.Code != want {
-			t.Errorf("%s: token endpoint = %d, want %d", host, rec.Code, want)
+			t.Errorf("%s: WriteAuthorizationError(AuthorizationRequest error) = %d, want %d", host, rec.Code, want)
 		}
 
 		_, err = p.ValidateAccessToken(httptest.NewRequest(http.MethodGet, "https://"+host+"/api", nil), "token")

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kyosu-1/grantor"
@@ -147,18 +148,19 @@ func ExampleProvider_Exchange() {
 // created or any authorization code or refresh token is used up.
 func ExampleConfig_beforeIssue() {
 	disabled := map[string]bool{"mallory": true}
+	tenants := map[string]string{"web-app": "acme"}
 	cfg := grantor.Config{
 		BeforeIssue: func(ctx context.Context, is *grantor.Issuance) error {
 			if disabled[is.Subject] {
 				return &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "the account is disabled"}
 			}
-			// Narrow by policy, using the token request if needed.
-			if is.GrantType == grantor.GrantTypeRefreshToken {
+			// Narrow by policy, using the token request if needed: refreshes
+			// keep the admin scope only when the client asks for it again.
+			if is.GrantType == grantor.GrantTypeRefreshToken && !slices.Contains(strings.Fields(is.Request.Form.Get("scope")), "admin") {
 				is.Scopes = slices.DeleteFunc(is.Scopes, func(s string) bool { return s == "admin" })
 			}
-			if device := is.Request.Form.Get("device_id"); device != "" {
-				is.AccessTokenClaims["device_id"] = device
-			}
+			// Claims come from the application's own data, never from the request.
+			is.AccessTokenClaims["tenant"] = tenants[is.Client.ID]
 			is.AccessTokenLifetime = 10 * time.Minute
 			return nil
 		},

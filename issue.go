@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"time"
 )
@@ -166,19 +167,27 @@ func (p *Provider) planIssuance(ctx context.Context, req *TokenRequest, client *
 	// to it: the audience is what keeps the two apart (RFC 9068 section 5,
 	// RFC 8725 section 2.8).
 	if plan.format == AccessTokenFormatJWT && len(plan.audience) == 0 {
-		return nil, errServer(fmt.Errorf("JWT access tokens for client %q need an audience; set Client.Audience", client.ID))
+		return nil, errServer(fmt.Errorf("JWT access token for client %q has no audience: set Client.Audience, and grant it in Approval.Audience or Grant.Audience without BeforeIssue removing all of it", client.ID))
 	}
 	return plan, nil
 }
 
 // runBeforeIssue lets Config.BeforeIssue adjust plan and validates the result.
 func (p *Provider) runBeforeIssue(ctx context.Context, req *TokenRequest, client *Client, grant *Token, plan *issuePlan) *Error {
-	c := *client
+	// The hook gets copies, so that changes to informational fields cannot
+	// reach the rest of the issuance.
+	reqCopy := *req
+	reqCopy.Client = client.clone()
+	reqCopy.Scopes = slices.Clone(req.Scopes)
+	reqCopy.Form = make(url.Values, len(req.Form))
+	for name, values := range req.Form {
+		reqCopy.Form[name] = slices.Clone(values)
+	}
 	is := &Issuance{
 		Issuer:               req.iss.url,
 		GrantType:            req.GrantType,
-		Request:              req,
-		Client:               &c,
+		Request:              &reqCopy,
+		Client:               client.clone(),
 		GrantID:              grant.GrantID,
 		Subject:              grant.Subject,
 		AuthTime:             grant.AuthTime,

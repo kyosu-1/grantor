@@ -99,6 +99,8 @@ func TestApprovalValidationErrors(t *testing.T) {
 	}
 }
 
+// Narrowing TokenRequest.Scopes, as a custom token endpoint might try, must
+// fail loudly instead of being ignored.
 func TestTokenRequestScopesAreReadOnly(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
@@ -106,15 +108,20 @@ func TestTokenRequestScopesAreReadOnly(t *testing.T) {
 		req.Scopes = slices.DeleteFunc(req.Scopes, func(s string) bool { return s == "api" })
 	})
 	status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic(serviceClient, confidentialSecret))
-	if status != http.StatusOK || body["scope"] != "api" {
-		t.Fatalf("client credentials = %d %v, want the requested scope", status, body)
-	}
+	expectError(t, status, body, http.StatusInternalServerError, "server_error")
 }
 
 func TestBeforeIssueSeesTokenRequest(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
+	var encodedGrantType grantor.GrantType
 	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.AccessTokenFormats = map[grantor.AccessTokenFormat]grantor.AccessTokenEncoder{
+			"recording": func(ctx context.Context, at *grantor.AccessToken, sign grantor.SignFunc) (string, error) {
+				encodedGrantType = at.GrantType
+				return "rec_" + at.ID, nil
+			},
+		}
 		c.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
 			if is.Request == nil || is.Request.GrantType != is.GrantType {
 				t.Errorf("Issuance.Request = %+v", is.Request)
@@ -123,11 +130,36 @@ func TestBeforeIssueSeesTokenRequest(t *testing.T) {
 			if drop := is.Request.Form.Get("drop"); drop != "" {
 				is.Scopes = slices.DeleteFunc(is.Scopes, func(s string) bool { return s == drop })
 			}
+			is.AccessTokenFormat = "recording"
+			// Informational fields are copies.
+			is.Request.GrantType = "urn:example:changed"
+			is.Request.Client.Scopes[0] = "admin"
+			is.Client.Scopes[0] = "admin"
 			return nil
 		}
 	})
 	status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}, "drop": {"api"}}, basic(serviceClient, confidentialSecret))
 	if status != http.StatusOK || body["scope"] != nil {
 		t.Fatalf("narrowed to nothing = %d %v, want no scope", status, body)
+	}
+	if encodedGrantType != grantor.GrantTypeClientCredentials {
+		t.Fatalf("grant type after the hook changed Issuance.Request = %q", encodedGrantType)
+	}
+	status, body = e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api"}}, basic(serviceClient, confidentialSecret))
+	if status != http.StatusOK || body["scope"] != "api" {
+		t.Fatalf("client after the hook changed Issuance.Client = %d %v", status, body)
+	}
+}
+
+// A saved request is completed from its stored copy; a changed audience is
+// reported like any other changed protocol field.
+func TestSavedRequestAudienceModified(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	e.store.SetClient(testIssuer, apiClient(""))
+	req := e.startAuthorization(authParams("api-client", "openid api", pkcePair{}))
+	req.Audience = req.Audience[:1]
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), Audience: req.Audience}); !errors.Is(err, grantor.ErrAuthorizationRequestModified) {
+		t.Fatalf("Approve with a changed audience = %v, want ErrAuthorizationRequestModified", err)
 	}
 }

@@ -60,20 +60,30 @@ func (e *Endpoints) validate() error {
 var errNoInteract = errors.New("Config.Interact is not set")
 
 // withIssuer resolves the issuer of r and calls fn. Requests for unknown
-// issuers get 404; failures to resolve an issuer are logged and get 500.
-func (p *Provider) withIssuer(w http.ResponseWriter, r *http.Request, fn func(http.ResponseWriter, *http.Request, *resolvedIssuer)) {
+// issuers get 404, and failures to resolve an issuer are logged and get 500:
+// as a JSON error response when jsonErrors is set, otherwise with
+// Config.ErrorPage.
+func (p *Provider) withIssuer(w http.ResponseWriter, r *http.Request, jsonErrors bool, fn func(http.ResponseWriter, *http.Request, *resolvedIssuer)) {
 	iss, err := p.issuerFor(r)
-	if err != nil {
-		if perr := issuerError(err); perr.Code == CodeServerError {
-			p.logError(r.Context(), "resolve issuer", perr)
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
-		}
-		p.cfg.Logger.DebugContext(r.Context(), "grantor: no issuer for request", "path", r.URL.Path, "error", err)
-		http.NotFound(w, r)
+	if err == nil {
+		fn(w, r, iss)
 		return
 	}
-	fn(w, r, iss)
+	perr := issuerError(err)
+	if perr.Code == CodeServerError {
+		p.logError(r.Context(), "resolve issuer", perr)
+	} else {
+		p.cfg.Logger.DebugContext(r.Context(), "grantor: no issuer for request", "path", r.URL.Path, "error", err)
+	}
+	switch {
+	case jsonErrors:
+		noStore(w)
+		writeJSON(w, perr.HTTPStatus(), map[string]string{"error": perr.Code, "error_description": perr.Description})
+	case perr.Code == CodeServerError:
+		p.cfg.ErrorPage(w, r, perr)
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 // ServeAuthorization serves the authorization endpoint: it parses and saves
@@ -81,33 +91,33 @@ func (p *Provider) withIssuer(w http.ResponseWriter, r *http.Request, fn func(ht
 // ParseAuthorizationRequest and the related methods to write an
 // authorization endpoint of your own.
 func (p *Provider) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
-	p.withIssuer(w, r, p.serveAuthorization)
+	p.withIssuer(w, r, false, p.serveAuthorization)
 }
 
 // ServeToken serves the token endpoint. Use ParseTokenRequest, Exchange and
 // WriteTokenResponse to write a token endpoint of your own.
 func (p *Provider) ServeToken(w http.ResponseWriter, r *http.Request) {
-	p.withIssuer(w, r, p.serveToken)
+	p.withIssuer(w, r, true, p.serveToken)
 }
 
 // ServeUserInfo serves the UserInfo endpoint.
 func (p *Provider) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
-	p.withIssuer(w, r, p.serveUserInfo)
+	p.withIssuer(w, r, true, p.serveUserInfo)
 }
 
 // ServeIntrospection serves the token introspection endpoint.
 func (p *Provider) ServeIntrospection(w http.ResponseWriter, r *http.Request) {
-	p.withIssuer(w, r, p.serveIntrospection)
+	p.withIssuer(w, r, true, p.serveIntrospection)
 }
 
 // ServeRevocation serves the token revocation endpoint.
 func (p *Provider) ServeRevocation(w http.ResponseWriter, r *http.Request) {
-	p.withIssuer(w, r, p.serveRevocation)
+	p.withIssuer(w, r, true, p.serveRevocation)
 }
 
 // ServeJWKS serves the public keys of the issuer.
 func (p *Provider) ServeJWKS(w http.ResponseWriter, r *http.Request) {
-	p.withIssuer(w, r, p.serveJWKS)
+	p.withIssuer(w, r, false, p.serveJWKS)
 }
 
 // ServeDiscovery serves the OpenID Provider and RFC 8414 authorization server
@@ -115,5 +125,5 @@ func (p *Provider) ServeJWKS(w http.ResponseWriter, r *http.Request) {
 // the issuer path, and for RFC 8414 at
 // /.well-known/oauth-authorization-server followed by the issuer path.
 func (p *Provider) ServeDiscovery(w http.ResponseWriter, r *http.Request) {
-	p.withIssuer(w, r, p.serveDiscovery)
+	p.withIssuer(w, r, false, p.serveDiscovery)
 }

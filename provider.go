@@ -35,10 +35,10 @@ type Issuer struct {
 	URL string
 
 	// Keys signs ID tokens and JWT access tokens. Every key is published in
-	// the JWKS. For each
-	// algorithm, the first key with that algorithm signs new tokens, so a key
-	// can be rotated by putting the new key before the old one and removing
-	// the old key once tokens signed with it have expired.
+	// the JWKS. For each algorithm, the first key with that algorithm signs
+	// new tokens, so a key can be rotated by putting the new key before the
+	// old one and removing the old key once tokens signed with it have
+	// expired.
 	Keys []SigningKey
 }
 
@@ -294,9 +294,12 @@ func issuerError(err error) *Error {
 
 // ServeHTTP routes requests to the protocol endpoints of the issuer the
 // request belongs to, at the paths configured in Config.Endpoints, and serves
-// the discovery documents at their well-known locations.
+// the discovery documents at their well-known locations. Requests whose
+// issuer cannot be resolved get 404, or Config.ErrorPage for failures other
+// than an unknown issuer; mount ServeToken and the other endpoint methods
+// separately for JSON error responses in that case.
 func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	p.withIssuer(w, r, p.route)
+	p.withIssuer(w, r, false, p.route)
 }
 
 func (p *Provider) route(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer) {

@@ -137,18 +137,56 @@ func TestCustomGrantChecks(t *testing.T) {
 	status, body = request(serviceClient)
 	expectError(t, status, body, http.StatusBadRequest, "unauthorized_client")
 
-	// Editing the parsed request in place has no effect on what is issued.
-	r := httptest.NewRequest(http.MethodPost, testIssuer+"/token", strings.NewReader("grant_type=client_credentials&scope=api"))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.SetBasicAuth(serviceClient, confidentialSecret)
-	req, err := e.p.ParseTokenRequest(r)
-	if err != nil {
-		t.Fatal(err)
+	// A grant function cannot change the request it was given.
+	grant, grantErr = &grantor.Grant{Scopes: []string{"api"}}, nil
+	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.Grants = map[grantor.GrantType]grantor.GrantFunc{
+			apiKeyGrant: func(_ context.Context, req *grantor.TokenRequest) (*grantor.Grant, error) {
+				req.GrantType = grantor.GrantTypeClientCredentials
+				return grant, nil
+			},
+		}
+	})
+	status, body = request("cli")
+	expectError(t, status, body, http.StatusInternalServerError, "server_error")
+}
+
+func TestTokenRequestEdits(t *testing.T) {
+	e := newEnv(t)
+	e.registerClients()
+	parse := func() *grantor.TokenRequest {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, testIssuer+"/token", strings.NewReader("grant_type=client_credentials&scope=api"))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.SetBasicAuth(serviceClient, confidentialSecret)
+		req, err := e.p.ParseTokenRequest(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
 	}
+	ctx := context.Background()
+
+	// Editing the client in place has no effect on what is issued.
+	req := parse()
+	req.Client.Scopes[0] = "admin"
 	req.Client.Scopes = append(req.Client.Scopes, "admin")
-	req.Scopes = []string{"admin"}
-	if resp, err := e.p.Exchange(context.Background(), req); err != nil || resp.Scope != "api" {
-		t.Errorf("Exchange after editing the request = %+v, %v; want the parsed scope", resp, err)
+	if resp, err := e.p.Exchange(ctx, req); err != nil || resp.Scope != "api" {
+		t.Errorf("Exchange after editing the client = %+v, %v; want the registered scope", resp, err)
+	}
+
+	// Editing the grant type or the scopes is an error, never ignored.
+	for name, edit := range map[string]func(*grantor.TokenRequest){
+		"narrowed scopes": func(req *grantor.TokenRequest) { req.Scopes = nil },
+		"widened scopes":  func(req *grantor.TokenRequest) { req.Scopes = []string{"api", "openid"} },
+		"grant type":      func(req *grantor.TokenRequest) { req.GrantType = "urn:example:other" },
+	} {
+		req := parse()
+		edit(req)
+		var perr *grantor.Error
+		if _, err := e.p.Exchange(ctx, req); !errors.As(err, &perr) || perr.Code != grantor.CodeServerError {
+			t.Errorf("%s: Exchange = %v, want server_error", name, err)
+		}
 	}
 }
 

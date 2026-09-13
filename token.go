@@ -16,11 +16,12 @@ type TokenRequest struct {
 	// Client is the authenticated client, or for public clients the client
 	// identified by client_id. Changing it has no effect; replacing it makes
 	// Exchange fail.
-	Client    *Client
+	Client *Client
+	// GrantType is the grant_type parameter. Changing it makes Exchange fail.
 	GrantType GrantType
 	// Scopes is the scope parameter, or nil if it was not sent. It is always
 	// nil for the authorization code grant, which has no scope parameter.
-	// Changing it has no effect; narrow scopes in Config.BeforeIssue.
+	// Changing it makes Exchange fail; narrow scopes in Config.BeforeIssue.
 	Scopes []string
 	// Form holds the request parameters except client credentials.
 	Form url.Values
@@ -30,9 +31,10 @@ type TokenRequest struct {
 	// and TLS state. Its body has already been read.
 	HTTPRequest *http.Request
 
-	iss    *resolvedIssuer
-	client Client   // the authenticated client, unaffected by changes to Client
-	scopes []string // the scope parameter, unaffected by changes to Scopes
+	iss       *resolvedIssuer
+	client    *Client   // a copy of the authenticated client
+	grantType GrantType // the grant_type parameter
+	scopes    []string  // the scope parameter
 }
 
 // TokenResponse is a successful token response.
@@ -84,8 +86,9 @@ func (p *Provider) parseToken(w http.ResponseWriter, r *http.Request, iss *resol
 		Issuer:      iss.url,
 		HTTPRequest: r,
 		iss:         iss,
-		client:      *client,
+		client:      client.clone(),
 	}
+	req.grantType = req.GrantType
 	for name, v := range q.values {
 		if name != "client_secret" && name != "client_assertion" {
 			req.Form.Set(name, v)
@@ -102,17 +105,22 @@ func (p *Provider) parseToken(w http.ResponseWriter, r *http.Request, iss *resol
 }
 
 // checkTokenRequest rejects token requests that were not created by
-// ParseTokenRequest or whose client was replaced, and returns a copy of the
-// authenticated client.
+// ParseTokenRequest or whose client, grant type or scopes were changed, and
+// returns a copy of the authenticated client. Changes are errors rather than
+// ignored, so that an application that narrows TokenRequest.Scopes does not
+// silently issue more than it meant to.
 func checkTokenRequest(req *TokenRequest) (*Client, *Error) {
-	if req == nil || req.iss == nil {
+	switch {
+	case req == nil || req.iss == nil:
 		return nil, errServer(errors.New("the TokenRequest was not created by ParseTokenRequest"))
-	}
-	if req.Client == nil || req.Client.ID != req.client.ID {
+	case req.Client == nil || req.Client.ID != req.client.ID:
 		return nil, errServer(errors.New("TokenRequest.Client was replaced"))
+	case req.GrantType != req.grantType:
+		return nil, errServer(errors.New("TokenRequest.GrantType was changed"))
+	case !slices.Equal(req.Scopes, req.scopes):
+		return nil, errServer(errors.New("TokenRequest.Scopes was changed; narrow scopes in Config.BeforeIssue"))
 	}
-	c := req.client
-	return &c, nil
+	return req.client.clone(), nil
 }
 
 // Exchange performs the grant of a token request and issues tokens.
@@ -147,6 +155,9 @@ func (p *Provider) exchange(ctx context.Context, req *TokenRequest) (*TokenRespo
 	g, err := fn(ctx, req)
 	if err != nil {
 		return nil, asProtocolError(err)
+	}
+	if _, perr := checkTokenRequest(req); perr != nil {
+		return nil, perr
 	}
 	return p.issueGrant(ctx, req, client, g)
 }
@@ -392,6 +403,7 @@ func (p *Provider) issueTokens(ctx context.Context, req *TokenRequest, client *C
 		return nil, perr
 	}
 	if perr := p.storeTokens(ctx, minted); perr != nil {
+		p.discardTokens(ctx, minted)
 		return nil, perr
 	}
 	return minted.resp, nil
@@ -486,9 +498,10 @@ func (p *Provider) storeTokens(ctx context.Context, minted *mintedTokens) *Error
 
 // storeAndConsume stores minted tokens and then consumes the authorization
 // code or refresh token they were issued for. In this order a failure to
-// store leaves the single-use token usable for a retry, and no token of a
-// grant is stored after a revocation of the grant. Tokens stored before a
-// failed consume are revoked, since they are never returned.
+// store leaves the single-use token usable for a retry, and a token stored
+// after its grant was revoked is never returned, because consuming then
+// fails. Tokens that are not returned are revoked on a best-effort basis;
+// their values were never disclosed.
 func (p *Provider) storeAndConsume(ctx context.Context, minted *mintedTokens, hash string) (*TokenResponse, *Error) {
 	if perr := p.storeTokens(ctx, minted); perr != nil {
 		p.discardTokens(ctx, minted)
@@ -504,6 +517,8 @@ func (p *Provider) storeAndConsume(ctx context.Context, minted *mintedTokens, ha
 // discardTokens revokes minted tokens that will not be returned to the
 // client. Failures are logged; the token values were never disclosed.
 func (p *Provider) discardTokens(ctx context.Context, minted *mintedTokens) {
+	// The request may have failed because its context was canceled.
+	ctx = context.WithoutCancel(ctx)
 	for _, t := range minted.records {
 		if err := p.cfg.Storage.RevokeToken(ctx, t.Hash); err != nil {
 			p.logError(ctx, "revoke undelivered token", err)
