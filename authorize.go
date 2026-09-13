@@ -97,6 +97,9 @@ func (p *Provider) parseAuthorization(r *http.Request, iss *resolvedIssuer) (*Au
 	default:
 		return nil, &authorizationError{err: &Error{Code: CodeInvalidRequest, Description: "method not allowed", StatusCode: http.StatusMethodNotAllowed}, iss: iss}
 	}
+	if p.cfg.PAR != PARDisabled && q.has("request_uri") {
+		return p.redeemPushedRequest(r, iss, q)
+	}
 	client, target, perr := p.authorizationTarget(r.Context(), iss, q)
 	if perr != nil {
 		return nil, &authorizationError{err: perr, iss: iss}

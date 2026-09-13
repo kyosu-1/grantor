@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -85,7 +86,8 @@ func (p *Provider) AuthorizationRequest(r *http.Request, id string) (*Authorizat
 // binding. When w is not nil, a binding cookie set on w during this request
 // is accepted, because the user agent has not sent it back yet.
 func (p *Provider) loadPending(w http.ResponseWriter, r *http.Request, iss *resolvedIssuer, id string) (*AuthorizationRequest, error) {
-	if id == "" {
+	// Pushed requests are only reachable through request_uri.
+	if id == "" || strings.HasPrefix(id, pushedIDPrefix) {
 		return nil, ErrAuthorizationRequestNotFound
 	}
 	req, err := p.cfg.Storage.AuthorizationRequest(r.Context(), id)
@@ -363,6 +365,7 @@ func sameProtocolFields(a, b *AuthorizationRequest) bool {
 		a.State == b.State &&
 		slices.Equal(a.Scopes, b.Scopes) &&
 		slices.Equal(a.Audience, b.Audience) &&
+		a.Pushed == b.Pushed &&
 		a.CodeChallenge == b.CodeChallenge &&
 		a.CodeChallengeMethod == b.CodeChallengeMethod &&
 		a.Nonce == b.Nonce &&

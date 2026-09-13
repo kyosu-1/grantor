@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -190,4 +191,70 @@ func (p *Provider) WritePushedAuthorizationResponse(w http.ResponseWriter, resp 
 // pushed.
 func (p *Provider) parRequired(client *Client) bool {
 	return p.cfg.PAR == PARRequired || client.RequirePushedAuthorizationRequests
+}
+
+// redeemPushedRequest returns the pushed authorization request that an
+// authorization request refers to with request_uri, after deleting it so
+// that it cannot be used again. Only client_id and request_uri of the
+// authorization request are read (RFC 9126 section 4).
+func (p *Provider) redeemPushedRequest(r *http.Request, iss *resolvedIssuer, q params) (*AuthorizationRequest, error) {
+	ctx := r.Context()
+	page := func(perr *Error) error { return &authorizationError{err: perr, iss: iss} }
+	invalidURI := page(newError(CodeInvalidRequestURI, "request_uri is invalid, expired or already used"))
+
+	if q.isRepeated("client_id") || q.isRepeated("request_uri") {
+		return nil, page(errInvalidRequest("client_id and request_uri must not be repeated"))
+	}
+	clientID := q.get("client_id")
+	if clientID == "" {
+		return nil, page(errInvalidRequest("client_id is required"))
+	}
+	ref, ok := strings.CutPrefix(q.get("request_uri"), requestURIPrefix)
+	if !ok || ref == "" {
+		return nil, invalidURI
+	}
+	pushed, err := p.cfg.Storage.AuthorizationRequest(ctx, pushedIDPrefix+ref)
+	if errors.Is(err, ErrNotFound) {
+		return nil, invalidURI
+	}
+	if err != nil {
+		return nil, page(errServer(fmt.Errorf("load pushed authorization request: %w", err)))
+	}
+	if pushed.ID != pushedIDPrefix+ref || !pushed.Pushed || pushed.Issuer != iss.url || pushed.ClientID != clientID || !p.now().Before(pushed.ExpiresAt) {
+		return nil, invalidURI
+	}
+	switch err := p.cfg.Storage.DeleteAuthorizationRequest(ctx, pushed.ID); {
+	case errors.Is(err, ErrNotFound):
+		return nil, invalidURI
+	case err != nil:
+		return nil, page(errServer(fmt.Errorf("delete pushed authorization request: %w", err)))
+	}
+
+	// The client registration may have changed since the request was pushed
+	// (RFC 9126 section 7.4).
+	client, err := p.client(ctx, iss, clientID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, page(errInvalidRequest("the client is not registered"))
+	}
+	if err != nil {
+		return nil, page(errServer(err))
+	}
+	if err := p.checkDelivery(iss, client, pushed); err != nil {
+		return nil, page(errInvalidRequest("the pushed request no longer matches the client registration"))
+	}
+	if err := p.checkRequest(iss, client, pushed); err != nil {
+		return nil, &authorizationError{
+			err:    errInvalidRequest("the pushed request no longer matches the client registration"),
+			iss:    iss,
+			target: targetOf(pushed),
+		}
+	}
+
+	now := p.now()
+	req := *pushed
+	req.ID = ""
+	req.parsed = true
+	req.CreatedAt = now
+	req.ExpiresAt = now.Add(p.cfg.Lifetimes.AuthorizationRequest)
+	return &req, nil
 }
