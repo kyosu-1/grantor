@@ -8,11 +8,13 @@ This directory runs the [OpenID Foundation conformance suite](https://gitlab.com
 
 The script:
 
-1. clones the suite into `.work/` and starts it with Docker Compose on https://localhost.emobix.co.uk:8443 (this hostname resolves to 127.0.0.1);
+1. clones the suite release named by `CONFORMANCE_SUITE_REF` (default `release-v5.2.4`) into `.work/` and starts its matching Docker images on https://localhost.emobix.co.uk:8443 (this hostname resolves to 127.0.0.1). [compose-host.yml](compose-host.yml) maps `host.docker.internal` to the host, which Linux engines need;
 2. starts `go run ./conformance`: the example provider over HTTPS on port 9443, with a self-signed certificate, the static clients the suite expects, and automatic consent. The suite reaches it as `https://host.docker.internal:9443`;
 3. runs the Basic OP, Config OP and Form Post Basic OP certification plans with static clients and discovery, signing in as `alice` through the login form ([basic-op.json](basic-op.json)).
 
-Results are printed at the end and exported to `.work/results`. The suite's web UI at https://localhost.emobix.co.uk:8443 shows every test log.
+Results are printed at the end and exported to `.work/results`; the script exits non-zero when a test fails or warns. The suite's web UI at https://localhost.emobix.co.uk:8443 shows every test log.
+
+The same script runs in CI on every push to main and every pull request ([.github/workflows/conformance.yml](../../.github/workflows/conformance.yml)), which uploads the results as an artifact.
 
 ## Expected results
 
@@ -26,4 +28,4 @@ The Basic OP and Form Post Basic OP plans each report:
 
 The Config OP plan's single test passes.
 
-When you are done, stop the suite with `docker compose -f .work/conformance-suite/docker-compose-prebuilt.yml down`.
+When you are done, stop the suite with `docker compose -f .work/conformance-suite-release-v5.2.4/docker-compose-prebuilt.yml down`.

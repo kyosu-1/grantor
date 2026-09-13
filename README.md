@@ -234,7 +234,7 @@ Set `Config.IssuerFor` instead of `Config.Issuer` to resolve the issuer from eac
 
 ## Conformance
 
-The example provider passes the [OpenID Foundation conformance suite](https://gitlab.com/openid/conformance-suite)'s Basic OP, Config OP and Form Post Basic OP plans with no failures or warnings, run locally with [`examples/conformance`](examples/conformance). Tests that ask a human to review a screenshot are reported as REVIEW, and the request object test is skipped because request objects are not supported. grantor has not been submitted for OpenID Certification.
+The example provider passes the [OpenID Foundation conformance suite](https://gitlab.com/openid/conformance-suite)'s Basic OP, Config OP and Form Post Basic OP plans with no failures or warnings. The plans run in CI on every push and pull request, and locally with [`examples/conformance`](examples/conformance). Tests that ask a human to review a screenshot are reported as REVIEW, and the request object test is skipped because request objects are not supported. grantor has not been submitted for OpenID Certification.
 
 ## Specifications
 
@@ -263,7 +263,7 @@ OAuth 2.1 is still an Internet-Draft; grantor follows draft-ietf-oauth-v2-1-16. 
 
 ## Roadmap
 
-Pushed authorization requests (RFC 9126), resource indicators (RFC 8707), DPoP (RFC 9449), RP-initiated logout, dynamic client registration, and running the OpenID Foundation conformance suite in CI.
+Pushed authorization requests (RFC 9126), resource indicators (RFC 8707), DPoP (RFC 9449), RP-initiated logout, and dynamic client registration.
 
 ## License
 

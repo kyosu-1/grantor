@@ -1,0 +1,36 @@
+name: OpenID conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the Basic OP, Config OP and Form Post Basic OP plans
+        env:
+          CONFORMANCE_WORKDIR: ${{ runner.temp }}/conformance
+        run: bash examples/conformance/run.sh
+      - name: Show the provider log
+        if: always()
+        run: cat "$RUNNER_TEMP/conformance/provider.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-results
+          path: ${{ runner.temp }}/conformance/results
+          if-no-files-found: ignore

@@ -1,0 +1,7 @@
+# Lets the conformance suite reach the provider on the host as
+# host.docker.internal. Docker Desktop defines the name itself; Linux engines,
+# such as GitHub Actions runners, need the mapping.
+services:
+  server:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
