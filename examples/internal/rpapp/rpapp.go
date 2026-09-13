@@ -30,7 +30,7 @@ type Config struct {
 	ClientID     string
 	ClientSecret string
 	// BaseURL is where the relying party is served, for example
-	// http://localhost:8081. The redirect URI is BaseURL + "/callback".
+	// http://localhost:9002. The redirect URI is BaseURL + "/callback".
 	BaseURL string
 	Scopes  []string
 }

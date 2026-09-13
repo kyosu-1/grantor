@@ -5,10 +5,10 @@ package demo
 import "github.com/kyosu-1/grantor"
 
 const (
-	ProviderAddr = "localhost:8080"
+	ProviderAddr = "localhost:9001"
 	Issuer       = "http://" + ProviderAddr
 
-	RelyingPartyAddr = "localhost:8081"
+	RelyingPartyAddr = "localhost:9002"
 	RelyingPartyURL  = "http://" + RelyingPartyAddr
 
 	ClientID = "demo-rp"

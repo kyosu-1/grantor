@@ -31,7 +31,7 @@ var templates = template.Must(template.ParseFS(templateFS, "templates/*.html"))
 
 // Config configures the example provider.
 type Config struct {
-	// Issuer is the issuer URL, for example http://localhost:8080.
+	// Issuer is the issuer URL, for example http://localhost:9001.
 	Issuer string
 	// Clients are registered at startup.
 	Clients []grantor.Client
