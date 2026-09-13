@@ -119,8 +119,9 @@ type Config struct {
 
 	// BeforeIssue is called before tokens are issued for any grant type,
 	// after all protocol checks. Returning an *Error sends it to the client;
-	// other errors become server_error. It may remove scopes from
-	// is.Scopes and set is.RefreshToken to false.
+	// other errors become server_error. It may narrow is.Scopes and
+	// is.Audience, withhold the refresh token, and set claims, lifetimes and
+	// the access token format; the Issuance field docs say what can change.
 	BeforeIssue func(ctx context.Context, is *Issuance) error
 
 	// DisableInteractionBinding stops binding authorization requests to the

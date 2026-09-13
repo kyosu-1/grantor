@@ -321,6 +321,7 @@ func (p *Provider) parseAuthorizationRequest(iss *resolvedIssuer, client *Client
 		UILocales:            splitSpaces(q.get("ui_locales")),
 		ClaimsLocales:        splitSpaces(q.get("claims_locales")),
 		ACRValues:            splitSpaces(q.get("acr_values")),
+		Audience:             slices.Clone(client.Audience),
 		CreatedAt:            now,
 		ExpiresAt:            now.Add(p.cfg.Lifetimes.AuthorizationRequest),
 	}

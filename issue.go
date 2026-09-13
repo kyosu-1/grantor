@@ -32,8 +32,8 @@ type Grant struct {
 	// RefreshToken also issues a refresh token. The client must be allowed
 	// the refresh_token grant.
 	RefreshToken bool
-	// Audience must be a subset of Client.Audience; nil means all of it.
-	// Other audiences fail with CodeInvalidTarget.
+	// Audience must be a subset of Client.Audience; nil or empty grants no
+	// audience. Other audiences fail with CodeInvalidTarget.
 	Audience []string
 }
 
@@ -42,6 +42,9 @@ type Grant struct {
 type Issuance struct {
 	Issuer    string
 	GrantType GrantType
+	// Request is the token request the tokens are issued for, for decisions
+	// based on its parameters. Changing it has no effect.
+	Request *TokenRequest
 	// Client is the client the tokens are issued to. Changes to it have no
 	// effect.
 	Client *Client
@@ -122,8 +125,8 @@ func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, g Grant) (
 	if g.RefreshToken && !client.allowsGrant(GrantTypeRefreshToken) {
 		return nil, errServer(fmt.Errorf("IssueTokens: client %q may not use refresh tokens", client.ID))
 	}
-	audience, err := resolveAudience(client.Audience, g.Audience)
-	if err != nil {
+	audience, ok := subsetOf(client.Audience, g.Audience)
+	if !ok {
 		return nil, newError(CodeInvalidTarget, "the audience is not registered for the client")
 	}
 	grant := &Token{
@@ -137,7 +140,7 @@ func (p *Provider) issueGrant(ctx context.Context, req *TokenRequest, g Grant) (
 		ACR:      g.ACR,
 		AMR:      g.AMR,
 	}
-	return p.issueTokens(ctx, req.iss, client, grant, scopes, g.RefreshToken, req.GrantType)
+	return p.issueTokens(ctx, req, client, grant, scopes, g.RefreshToken)
 }
 
 // issuePlan is what an issuance produces after defaults and
@@ -157,7 +160,7 @@ type issuePlan struct {
 // planIssuance resolves the format, audience and lifetimes of the tokens for
 // grant, runs Config.BeforeIssue, and checks that the hook only narrowed what
 // it may not widen. It runs before any single-use token is consumed.
-func (p *Provider) planIssuance(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, grantType GrantType, scopes []string, withRefresh bool) (*issuePlan, *Error) {
+func (p *Provider) planIssuance(ctx context.Context, req *TokenRequest, client *Client, grant *Token, scopes []string, withRefresh bool) (*issuePlan, *Error) {
 	plan := &issuePlan{
 		scopes:          scopes,
 		audience:        grant.Audience,
@@ -168,7 +171,7 @@ func (p *Provider) planIssuance(ctx context.Context, iss *resolvedIssuer, client
 		idLifetime:      firstDuration(client.IDTokenLifetime, p.cfg.Lifetimes.IDToken),
 	}
 	if p.cfg.BeforeIssue != nil {
-		if perr := p.runBeforeIssue(ctx, iss, client, grant, grantType, plan); perr != nil {
+		if perr := p.runBeforeIssue(ctx, req, client, grant, plan); perr != nil {
 			return nil, perr
 		}
 	}
@@ -182,11 +185,12 @@ func (p *Provider) planIssuance(ctx context.Context, iss *resolvedIssuer, client
 }
 
 // runBeforeIssue lets Config.BeforeIssue adjust plan and validates the result.
-func (p *Provider) runBeforeIssue(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, grantType GrantType, plan *issuePlan) *Error {
+func (p *Provider) runBeforeIssue(ctx context.Context, req *TokenRequest, client *Client, grant *Token, plan *issuePlan) *Error {
 	c := *client
 	is := &Issuance{
-		Issuer:               iss.url,
-		GrantType:            grantType,
+		Issuer:               req.iss.url,
+		GrantType:            req.GrantType,
+		Request:              req,
 		Client:               &c,
 		GrantID:              grant.GrantID,
 		Subject:              grant.Subject,

@@ -350,6 +350,7 @@ func (e *env) login(q url.Values, scopes []string) string {
 	rec, err := e.approve(req, grantor.Approval{
 		Subject:  "alice",
 		Scopes:   scopes,
+		Audience: req.Audience,
 		AuthTime: e.clock.Now(),
 		AMR:      []string{"pwd"},
 	})

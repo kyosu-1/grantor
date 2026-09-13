@@ -82,6 +82,7 @@ func fullAuthorizationRequest() *grantor.AuthorizationRequest {
 			UserInfo: map[string]*grantor.ClaimRequest{"email": nil, "name": {Essential: true}},
 			IDToken:  map[string]*grantor.ClaimRequest{"acr": {Essential: true, Values: []any{"urn:acr:1"}}},
 		},
+		Audience:    []string{"https://api.example.com"},
 		Extra:       map[string]string{"tenant": "acme"},
 		BindingHash: "binding-hash",
 		CreatedAt:   n,

@@ -21,15 +21,14 @@ type TokenRequest struct {
 	GrantType GrantType
 	// Scopes is the scope parameter, or nil if it was not sent. It is always
 	// nil for the authorization code grant, which has no scope parameter.
-	// Setting or narrowing it before Exchange narrows the access token of
-	// the authorization code and refresh token grants and the scope of the
-	// client credentials grant.
+	// Changing it has no effect; narrow scopes in Config.BeforeIssue.
 	Scopes []string
 	// Form holds the request parameters except client credentials.
 	Form url.Values
 
 	iss    *resolvedIssuer
-	client Client // the authenticated client, unaffected by changes to Client
+	client Client   // the authenticated client, unaffected by changes to Client
+	scopes []string // the scope parameter, unaffected by changes to Scopes
 }
 
 // TokenResponse is a successful token response.
@@ -87,10 +86,11 @@ func (p *Provider) parseToken(w http.ResponseWriter, r *http.Request, iss *resol
 		}
 	}
 	if q.has("scope") && req.GrantType != GrantTypeAuthorizationCode {
-		req.Scopes = splitSpaces(q.get("scope"))
-		if req.Scopes == nil {
-			req.Scopes = []string{}
+		req.scopes = splitSpaces(q.get("scope"))
+		if req.scopes == nil {
+			req.scopes = []string{}
 		}
+		req.Scopes = slices.Clone(req.scopes)
 	}
 	return req, nil
 }
@@ -206,7 +206,7 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 	if perr := checkClientGrant(client, t); perr != nil {
 		return nil, perr
 	}
-	accessScopes, perr := narrowScopes(t.Scopes, req.Scopes)
+	accessScopes, perr := narrowScopes(t.Scopes, req.scopes)
 	if perr != nil {
 		return nil, perr
 	}
@@ -215,7 +215,7 @@ func (p *Provider) exchangeAuthorizationCode(ctx context.Context, req *TokenRequ
 	// The hook runs and the tokens are minted and stored before the code is
 	// consumed, so that a failing hook, encoder, signing key or storage does
 	// not turn the client's retry into a reuse that revokes the grant.
-	plan, perr := p.planIssuance(ctx, iss, client, t, req.GrantType, accessScopes, withRefresh)
+	plan, perr := p.planIssuance(ctx, req, client, t, accessScopes, withRefresh)
 	if perr != nil {
 		return nil, perr
 	}
@@ -247,14 +247,14 @@ func (p *Provider) exchangeRefreshToken(ctx context.Context, req *TokenRequest, 
 		return nil, perr
 	}
 	// RFC 6749 section 6: the requested scope must not exceed the original.
-	accessScopes, perr := narrowScopes(t.Scopes, req.Scopes)
+	accessScopes, perr := narrowScopes(t.Scopes, req.scopes)
 	if perr != nil {
 		return nil, perr
 	}
 	if perr := checkClientGrant(client, t); perr != nil {
 		return nil, perr
 	}
-	plan, perr := p.planIssuance(ctx, iss, client, t, req.GrantType, accessScopes, true)
+	plan, perr := p.planIssuance(ctx, req, client, t, accessScopes, true)
 	if perr != nil {
 		return nil, perr
 	}
@@ -273,7 +273,7 @@ func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequ
 	if client.isPublic() || !client.allowsGrant(GrantTypeClientCredentials) {
 		return nil, newError(CodeUnauthorizedClient, "the client may not use the client credentials grant")
 	}
-	scopes, perr := validateScopes(client, req.Scopes)
+	scopes, perr := validateScopes(client, req.scopes)
 	if perr != nil {
 		return nil, perr
 	}
@@ -281,7 +281,7 @@ func (p *Provider) exchangeClientCredentials(ctx context.Context, req *TokenRequ
 		return nil, newError(CodeInvalidScope, "the client credentials grant has no end-user")
 	}
 	grant := &Token{GrantID: randomToken(), Issuer: iss.url, ClientID: client.ID, Scopes: scopes, Audience: slices.Clone(client.Audience)}
-	return p.issueTokens(ctx, iss, client, grant, scopes, false, req.GrantType)
+	return p.issueTokens(ctx, req, client, grant, scopes, false)
 }
 
 // narrowScopes applies a requested scope to the scopes a grant allows. A nil
@@ -379,12 +379,12 @@ func (p *Provider) revokeReusedGrant(ctx context.Context, t *Token) *Error {
 // not consume a single-use token: client credentials and custom grants. An
 // ID token is issued when the access token has the openid scope and the
 // grant has a subject.
-func (p *Provider) issueTokens(ctx context.Context, iss *resolvedIssuer, client *Client, grant *Token, accessScopes []string, withRefresh bool, grantType GrantType) (*TokenResponse, *Error) {
-	plan, perr := p.planIssuance(ctx, iss, client, grant, grantType, accessScopes, withRefresh)
+func (p *Provider) issueTokens(ctx context.Context, req *TokenRequest, client *Client, grant *Token, accessScopes []string, withRefresh bool) (*TokenResponse, *Error) {
+	plan, perr := p.planIssuance(ctx, req, client, grant, accessScopes, withRefresh)
 	if perr != nil {
 		return nil, perr
 	}
-	minted, perr := p.mintTokens(ctx, iss, client, grant, plan, slices.Contains(plan.scopes, "openid"), "", grantType)
+	minted, perr := p.mintTokens(ctx, req.iss, client, grant, plan, slices.Contains(plan.scopes, "openid"), "", req.GrantType)
 	if perr != nil {
 		return nil, perr
 	}

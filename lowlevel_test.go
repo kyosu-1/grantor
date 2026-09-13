@@ -271,13 +271,20 @@ func (e *env) tokenHandler(adjust func(*grantor.TokenRequest)) http.Handler {
 func TestCustomTokenHandler(t *testing.T) {
 	e := newEnv(t)
 	e.registerClients()
+	narrowTo := ""
+	e.p = mustProvider(t, e, func(c *grantor.Config) {
+		c.BeforeIssue = func(ctx context.Context, is *grantor.Issuance) error {
+			// Policy: the api scope is never granted through this endpoint.
+			is.Scopes = slices.DeleteFunc(is.Scopes, func(s string) bool { return s == "api" })
+			if narrowTo != "" {
+				is.Scopes = strings.Fields(narrowTo)
+			}
+			return nil
+		}
+	})
 	e.handler = e.tokenHandler(func(req *grantor.TokenRequest) {
 		if _, ok := req.Form["client_secret"]; ok {
 			t.Error("Form exposes client_secret")
-		}
-		// Policy: the api scope is never granted through this endpoint.
-		if req.Scopes != nil {
-			req.Scopes = slices.DeleteFunc(req.Scopes, func(s string) bool { return s == "api" })
 		}
 	})
 	status, body := e.tokenRequest(url.Values{"grant_type": {"client_credentials"}, "scope": {"api openid"}}, nil)
@@ -294,17 +301,18 @@ func TestCustomTokenHandler(t *testing.T) {
 
 	e.handler = e.p
 	code := e.login(authParams(confidentialClient, "openid profile", pkcePair{}), nil)
-	e.handler = e.tokenHandler(func(req *grantor.TokenRequest) { req.Scopes = []string{"openid"} })
+	e.handler, narrowTo = e.tokenHandler(func(*grantor.TokenRequest) {}), "openid"
 	status, body = e.exchangeCode(confidentialClient, code, "", basic(confidentialClient, confidentialSecret))
 	if status != http.StatusOK || body["scope"] != "openid" {
 		t.Fatalf("narrowed code exchange = %d %v", status, body)
 	}
 
-	e.handler = e.p
+	// BeforeIssue cannot widen the grant.
+	e.handler, narrowTo = e.p, ""
 	code = e.login(authParams(confidentialClient, "openid", pkcePair{}), nil)
-	e.handler = e.tokenHandler(func(req *grantor.TokenRequest) { req.Scopes = []string{"openid", "profile"} })
+	e.handler, narrowTo = e.tokenHandler(func(*grantor.TokenRequest) {}), "openid profile"
 	status, body = e.exchangeCode(confidentialClient, code, "", basic(confidentialClient, confidentialSecret))
-	expectError(t, status, body, http.StatusBadRequest, "invalid_scope")
+	expectError(t, status, body, http.StatusInternalServerError, "server_error")
 }
 
 func TestExchangeRejectsForeignTokenRequests(t *testing.T) {

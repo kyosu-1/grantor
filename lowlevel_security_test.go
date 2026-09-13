@@ -138,8 +138,8 @@ func TestIssueTokensOutsideExchange(t *testing.T) {
 	req := parse("grant_type=client_credentials&scope=api", serviceClient)
 	req.Client.Scopes = append(req.Client.Scopes, "admin")
 	req.Scopes = []string{"admin"}
-	if _, err := e.p.Exchange(ctx, req); err == nil {
-		t.Error("Exchange used scopes added to TokenRequest.Client")
+	if resp, err := e.p.Exchange(ctx, req); err != nil || resp.Scope != "api" {
+		t.Errorf("Exchange after editing the request = %+v, %v; want the parsed scope", resp, err)
 	}
 }
 

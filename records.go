@@ -49,6 +49,10 @@ type AuthorizationRequest struct {
 	// client may receive. See [Approval.Claims].
 	Claims *ClaimsRequest `json:"claims,omitempty"`
 
+	// Audience is the audience the request may be approved for. It starts as
+	// Client.Audience; see [Approval.Audience].
+	Audience []string `json:"audience,omitempty"`
+
 	// Extra holds the non-empty request parameters that grantor does not
 	// process, such as extension parameters.
 	Extra map[string]string `json:"extra,omitempty"`

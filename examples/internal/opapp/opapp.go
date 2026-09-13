@@ -331,6 +331,7 @@ func (a *App) approve(w http.ResponseWriter, r *http.Request, req *grantor.Autho
 	err := a.provider.Approve(w, r, req, grantor.Approval{
 		Subject:  s.subject,
 		Scopes:   scopes,
+		Audience: req.Audience,
 		AuthTime: s.authTime,
 		ACR:      acr,
 		AMR:      []string{"pwd"},

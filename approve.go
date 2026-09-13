@@ -21,6 +21,16 @@ var (
 	// [Provider.Deny] when a saved authorization request was changed after
 	// it was saved.
 	ErrAuthorizationRequestModified = errors.New("grantor: authorization request was modified after it was saved")
+
+	// ErrInvalidApproval wraps the errors of [Provider.Approve] for approvals
+	// that are not acceptable, such as scopes that were not requested or an
+	// end-user who must authenticate again.
+	ErrInvalidApproval = errors.New("grantor: invalid approval")
+
+	// ErrInvalidAuthorizationRequest wraps the errors of [Provider.Approve],
+	// [Provider.Deny] and [Provider.SaveAuthorizationRequest] for requests
+	// that were changed in a way the client registration does not allow.
+	ErrInvalidAuthorizationRequest = errors.New("grantor: invalid authorization request")
 )
 
 // Approval is the application's decision to approve an authorization
@@ -52,8 +62,10 @@ type Approval struct {
 	// listed.
 	Claims []string
 
-	// Audience lists the audiences access tokens of the grant are issued for.
-	// It must be a subset of Client.Audience; nil means all of it.
+	// Audience lists the audiences access tokens of the grant are issued for,
+	// a subset of the request's Audience. Nil or empty grants no audience;
+	// pass req.Audience to grant all of it. Clients that use JWT access tokens
+	// need at least one.
 	Audience []string
 }
 
@@ -131,9 +143,12 @@ func (p *Provider) Approve(w http.ResponseWriter, r *http.Request, req *Authoriz
 	if err != nil {
 		return err
 	}
-	audience, err := resolveAudience(client.Audience, a.Audience)
-	if err != nil {
-		return err
+	audience, ok := subsetOf(req.Audience, a.Audience)
+	if !ok {
+		return fmt.Errorf("%w: the approved audience was not requested", ErrInvalidApproval)
+	}
+	if len(audience) == 0 && firstFormat(client.AccessTokenFormat, p.cfg.AccessTokenFormat) == AccessTokenFormatJWT {
+		return fmt.Errorf("%w: client %q uses JWT access tokens, which need an audience", ErrInvalidApproval, client.ID)
 	}
 	if req.ID != "" {
 		if err := p.completeRequest(r, req); err != nil {
@@ -252,26 +267,23 @@ func (p *Provider) completable(w http.ResponseWriter, r *http.Request, req *Auth
 	return iss, client, current, nil
 }
 
-// resolveAudience returns the requested audiences, which must all be
-// allowed, or all allowed audiences when requested is nil.
-func resolveAudience(allowed, requested []string) ([]string, error) {
-	if requested == nil {
-		return slices.Clone(allowed), nil
-	}
-	out := []string{}
-	for _, a := range requested {
-		if !slices.Contains(allowed, a) {
-			return nil, fmt.Errorf("grantor: audience %q is not registered for the client", a)
+// subsetOf returns requested without duplicates if every value is in
+// allowed. Nil and empty both select nothing.
+func subsetOf(allowed, requested []string) ([]string, bool) {
+	var out []string
+	for _, v := range requested {
+		if !slices.Contains(allowed, v) {
+			return nil, false
 		}
-		if !slices.Contains(out, a) {
-			out = append(out, a)
+		if !slices.Contains(out, v) {
+			out = append(out, v)
 		}
 	}
-	return out, nil
+	return out, true
 }
 
 func invalidRequest(reason string) error {
-	return errors.New("grantor: invalid authorization request: " + reason)
+	return fmt.Errorf("%w: %s", ErrInvalidAuthorizationRequest, reason)
 }
 
 // checkDelivery validates what is needed to send an authorization response
@@ -316,6 +328,9 @@ func (p *Provider) checkRequest(iss *resolvedIssuer, client *Client, req *Author
 			return invalid("a scope is not registered for the client")
 		}
 	}
+	if _, ok := subsetOf(client.Audience, req.Audience); !ok {
+		return invalid("an audience is not registered for the client")
+	}
 	if req.CodeChallenge == "" {
 		if req.CodeChallengeMethod != "" || checkPKCEPolicy(client, req) != nil {
 			return invalid("the client must use PKCE")
@@ -337,6 +352,7 @@ func sameProtocolFields(a, b *AuthorizationRequest) bool {
 		a.ResponseMode == b.ResponseMode &&
 		a.State == b.State &&
 		slices.Equal(a.Scopes, b.Scopes) &&
+		slices.Equal(a.Audience, b.Audience) &&
 		a.CodeChallenge == b.CodeChallenge &&
 		a.CodeChallengeMethod == b.CodeChallengeMethod &&
 		a.Nonce == b.Nonce &&
@@ -375,12 +391,12 @@ func validateSubject(subject string) error {
 // granted scopes and the approved part of the claims request.
 func (p *Provider) validateApproval(req *AuthorizationRequest, a *Approval) ([]string, *ClaimsRequest, error) {
 	if err := validateSubject(a.Subject); err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("%w: %w", ErrInvalidApproval, err)
 	}
 	var scopes []string
 	for _, s := range a.Scopes {
 		if !req.HasScope(s) {
-			return nil, nil, fmt.Errorf("grantor: approved scope %q was not requested", s)
+			return nil, nil, fmt.Errorf("%w: approved scope %q was not requested", ErrInvalidApproval, s)
 		}
 		if !slices.Contains(scopes, s) {
 			scopes = append(scopes, s)
@@ -389,28 +405,28 @@ func (p *Provider) validateApproval(req *AuthorizationRequest, a *Approval) ([]s
 	requestedClaims := req.Claims.Names()
 	for _, c := range a.Claims {
 		if !slices.Contains(requestedClaims, c) {
-			return nil, nil, fmt.Errorf("grantor: approved claim %q was not requested", c)
+			return nil, nil, fmt.Errorf("%w: approved claim %q was not requested", ErrInvalidApproval, c)
 		}
 	}
 	if !req.IsOpenID() {
 		return scopes, nil, nil
 	}
 	if !slices.Contains(scopes, "openid") {
-		return nil, nil, errors.New("grantor: the openid scope must be approved for OpenID Connect requests")
+		return nil, nil, fmt.Errorf("%w: the openid scope must be approved for OpenID Connect requests", ErrInvalidApproval)
 	}
 	now := p.now()
 	if a.AuthTime.IsZero() || a.AuthTime.After(now.Add(time.Minute)) {
-		return nil, nil, errors.New("grantor: approval AuthTime must be set and not in the future")
+		return nil, nil, fmt.Errorf("%w: AuthTime must be set and not in the future", ErrInvalidApproval)
 	}
 	if req.needsAuthentication(a.AuthTime, now) {
-		return nil, nil, errors.New("grantor: the end-user must authenticate again (prompt=login or max_age)")
+		return nil, nil, fmt.Errorf("%w: the end-user must authenticate again (prompt=login or max_age)", ErrInvalidApproval)
 	}
 	if req.RequestedSubject != "" && req.RequestedSubject != a.Subject {
-		return nil, nil, errors.New("grantor: the authenticated end-user is not the one the client requested")
+		return nil, nil, fmt.Errorf("%w: the authenticated end-user is not the one the client requested", ErrInvalidApproval)
 	}
 	if values, essential := requestedEssentialACR(req.Claims); essential {
 		if a.ACR == "" || (len(values) > 0 && !slices.Contains(values, a.ACR)) {
-			return nil, nil, errors.New("grantor: the essential acr claim request is not satisfied")
+			return nil, nil, fmt.Errorf("%w: the essential acr claim request is not satisfied", ErrInvalidApproval)
 		}
 	}
 	return scopes, req.Claims.filter(func(name string) bool { return slices.Contains(a.Claims, name) }), nil

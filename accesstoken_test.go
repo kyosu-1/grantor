@@ -25,8 +25,8 @@ func TestApprovalAudienceMustBeRegistered(t *testing.T) {
 		Audience:   []string{"https://a.example.com", "https://b.example.com"}, PKCE: grantor.PKCEOptional,
 	})
 	req := e.startAuthorization(authParams("api-client", "openid api", pkcePair{}))
-	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), Audience: []string{"https://c.example.com"}}); err == nil {
-		t.Fatal("Approve accepted an audience outside the client registration")
+	if _, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), Audience: []string{"https://c.example.com"}}); !errors.Is(err, grantor.ErrInvalidApproval) {
+		t.Fatalf("Approve with an audience outside the client registration = %v, want ErrInvalidApproval", err)
 	}
 	rec, err := e.approve(req, grantor.Approval{Subject: "alice", Scopes: req.Scopes, AuthTime: e.clock.Now(), Audience: []string{"https://a.example.com"}})
 	if err != nil {

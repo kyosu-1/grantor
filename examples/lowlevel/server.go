@@ -57,7 +57,7 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 				if subtle.ConstantTimeCompare([]byte(req.Form.Get("api_key")), []byte("demo-api-key")) != 1 {
 					return nil, &grantor.Error{Code: grantor.CodeInvalidGrant, Description: "unknown API key"}
 				}
-				return provider.IssueTokens(ctx, req, grantor.Grant{Scopes: []string{"api"}})
+				return provider.IssueTokens(ctx, req, grantor.Grant{Scopes: []string{"api"}, Audience: req.Client.Audience})
 			},
 		},
 		BeforeIssue: func(ctx context.Context, is *grantor.Issuance) error {
@@ -97,7 +97,7 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 			}
 			return
 		}
-		err = provider.Approve(w, r, req, grantor.Approval{Subject: user, Scopes: req.Scopes, AuthTime: time.Now()})
+		err = provider.Approve(w, r, req, grantor.Approval{Subject: user, Scopes: req.Scopes, Audience: req.Audience, AuthTime: time.Now()})
 		if err != nil {
 			logger.ErrorContext(r.Context(), "approve", "error", err)
 			http.Error(w, "unable to complete the request", http.StatusInternalServerError)
