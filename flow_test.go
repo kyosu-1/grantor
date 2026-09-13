@@ -1,8 +1,8 @@
 package grantor_test
 
 import (
-	"encoding/base64"
 	"crypto/sha256"
+	"encoding/base64"
 	"net/http"
 	"net/url"
 	"slices"

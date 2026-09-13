@@ -610,17 +610,23 @@ func TestNewValidatesConfig(t *testing.T) {
 		}
 	}
 	cases := map[string]func(*grantor.Config){
-		"http issuer":         func(c *grantor.Config) { c.Issuer.URL = "http://op.example.com" },
-		"issuer with query":   func(c *grantor.Config) { c.Issuer.URL = "https://op.example.com?x=1" },
-		"trailing slash":      func(c *grantor.Config) { c.Issuer.URL = "https://op.example.com/" },
-		"no keys":             func(c *grantor.Config) { c.Issuer.Keys = nil },
-		"small RSA key":       func(c *grantor.Config) { c.Issuer.Keys[0].Signer = smallRSA },
-		"alg mismatch":        func(c *grantor.Config) { c.Issuer.Keys[0] = grantor.SigningKey{ID: "k", Signer: p384, Algorithm: "ES256"} },
-		"duplicate kid":       func(c *grantor.Config) { c.Issuer.Keys = append(c.Issuer.Keys, grantor.SigningKey{ID: "k", Signer: ecKey}) },
-		"no storage":          func(c *grantor.Config) { c.Storage = nil },
-		"no interact":         func(c *grantor.Config) { c.Interact = nil },
-		"issuer and resolver": func(c *grantor.Config) { c.IssuerFor = func(*http.Request) (*grantor.Issuer, error) { return nil, nil } },
-		"redefine openid":     func(c *grantor.Config) { c.ScopeClaims = map[string][]string{"openid": {"sub"}} },
+		"http issuer":       func(c *grantor.Config) { c.Issuer.URL = "http://op.example.com" },
+		"issuer with query": func(c *grantor.Config) { c.Issuer.URL = "https://op.example.com?x=1" },
+		"trailing slash":    func(c *grantor.Config) { c.Issuer.URL = "https://op.example.com/" },
+		"no keys":           func(c *grantor.Config) { c.Issuer.Keys = nil },
+		"small RSA key":     func(c *grantor.Config) { c.Issuer.Keys[0].Signer = smallRSA },
+		"alg mismatch": func(c *grantor.Config) {
+			c.Issuer.Keys[0] = grantor.SigningKey{ID: "k", Signer: p384, Algorithm: "ES256"}
+		},
+		"duplicate kid": func(c *grantor.Config) {
+			c.Issuer.Keys = append(c.Issuer.Keys, grantor.SigningKey{ID: "k", Signer: ecKey})
+		},
+		"no storage":  func(c *grantor.Config) { c.Storage = nil },
+		"no interact": func(c *grantor.Config) { c.Interact = nil },
+		"issuer and resolver": func(c *grantor.Config) {
+			c.IssuerFor = func(*http.Request) (*grantor.Issuer, error) { return nil, nil }
+		},
+		"redefine openid": func(c *grantor.Config) { c.ScopeClaims = map[string][]string{"openid": {"sub"}} },
 	}
 	for name, modify := range cases {
 		cfg := base()
