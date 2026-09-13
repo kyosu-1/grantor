@@ -50,7 +50,10 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 			Introspection: "/oauth2/introspect",
 			Revocation:    "/oauth2/revoke",
 			JWKS:          "/oauth2/keys",
+			// Pushed authorization requests (RFC 9126), enabled by Config.PAR.
+			PushedAuthorization: "/oauth2/par",
 		},
+		PAR: grantor.PARAllowed,
 		Grants: map[grantor.GrantType]grantor.GrantFunc{
 			apiKeyGrant: func(ctx context.Context, req *grantor.TokenRequest) (*grantor.Grant, error) {
 				if subtle.ConstantTimeCompare([]byte(req.Form.Get("api_key")), []byte("demo-api-key")) != 1 {
@@ -108,6 +111,7 @@ func newServer(issuer string, logger *slog.Logger) (http.Handler, error) {
 	mux.HandleFunc("POST /oauth2/introspect", provider.ServeIntrospection)
 	mux.HandleFunc("POST /oauth2/revoke", provider.ServeRevocation)
 	mux.HandleFunc("GET /oauth2/keys", provider.ServeJWKS)
+	mux.HandleFunc("POST /oauth2/par", provider.ServePushedAuthorization)
 	mux.HandleFunc("GET /.well-known/openid-configuration", provider.ServeDiscovery)
 	return mux, nil
 }

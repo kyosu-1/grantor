@@ -15,6 +15,7 @@ grantor implements the protocol; your application keeps control of everything el
 - **Token introspection** (RFC 7662) and **revocation** (RFC 7009), for every access token format
 - **Client authentication**: `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none`
 - **Response modes**: `query`, `fragment`, `form_post`; the RFC 9207 `iss` parameter on every authorization response
+- **Pushed authorization requests** (RFC 9126), optional or required per provider or per client
 - **Native apps**: loopback redirect URIs on any port (RFC 8252)
 - **Multiple issuers** in one process, with per-issuer keys and clients
 - **Signing keys** from any `crypto.Signer` (RSA, ECDSA, Ed25519), so keys can live in a KMS or HSM
@@ -214,6 +215,22 @@ cfg.AccessTokenFormats = map[grantor.AccessTokenFormat]grantor.AccessTokenEncode
 
 Approvals and custom grants choose audiences with `Approval.Audience` (within the request's `Audience`, which starts as `Client.Audience`) and `Grant.Audience` (within `Client.Audience`). A nil or empty audience grants none, and `Approve` rejects that for clients that use JWT access tokens. Refreshes and code exchanges fail once the client is no longer registered for a granted scope or audience.
 
+## Pushed authorization requests
+
+With pushed authorization requests (RFC 9126), clients send the authorization request parameters directly to the provider, authenticated like at the token endpoint, and send only a short `request_uri` through the browser:
+
+```go
+cfg.PAR = grantor.PARAllowed // or grantor.PARRequired for every client
+
+grantor.Client{
+	ID:                                 "bank-app",
+	RequirePushedAuthorizationRequests: true, // this client must push its requests
+	// ...
+}
+```
+
+The PAR endpoint is served at `Config.Endpoints.PushedAuthorization` (default `/par`) and advertised in discovery. At the authorization endpoint, grantor redeems each `request_uri` once, uses only the pushed parameters, and validates them again against the current client registration; the rest of the flow, including `Interact`, `Approve` and custom authorization endpoints, is unchanged, and `AuthorizationRequest.Pushed` tells you the request was pushed. `ParsePushedAuthorizationRequest`, `PushAuthorizationRequest` and `WritePushedAuthorizationResponse` build a PAR endpoint of your own. Pushed requests are stored with the authorization request methods of `Storage`, so no new storage code is needed.
+
 ## Storage
 
 Implement `grantor.Storage` (authorization requests, tokens, replay protection) and `grantor.ClientStore` for your database, then run the conformance suite:
@@ -251,6 +268,7 @@ OAuth 2.1 is still an Internet-Draft; grantor follows draft-ietf-oauth-v2-1-16. 
 | [RFC 7662: Token Introspection](https://www.rfc-editor.org/rfc/rfc7662) | Introspection endpoint |
 | [RFC 8414: Authorization Server Metadata](https://www.rfc-editor.org/rfc/rfc8414) | `/.well-known/oauth-authorization-server` |
 | [RFC 9207: Authorization Server Issuer Identification](https://www.rfc-editor.org/rfc/rfc9207) | `iss` in every authorization response |
+| [RFC 9126: Pushed Authorization Requests](https://www.rfc-editor.org/rfc/rfc9126) | PAR endpoint, `request_uri` at the authorization endpoint, `require_pushed_authorization_requests` per provider and per client |
 | [RFC 8252: OAuth 2.0 for Native Apps](https://www.rfc-editor.org/rfc/rfc8252) | Loopback redirect URIs on any port, reverse domain private-use schemes |
 | [RFC 9700: Best Current Practice for OAuth 2.0 Security](https://www.rfc-editor.org/rfc/rfc9700) | Security recommendations |
 | [RFC 7521: Assertion Framework](https://www.rfc-editor.org/rfc/rfc7521) and [RFC 7523: JWT Profile for Client Authentication](https://www.rfc-editor.org/rfc/rfc7523) | `private_key_jwt` |
@@ -263,7 +281,7 @@ OAuth 2.1 is still an Internet-Draft; grantor follows draft-ietf-oauth-v2-1-16. 
 
 ## Roadmap
 
-Pushed authorization requests (RFC 9126), resource indicators (RFC 8707), DPoP (RFC 9449), RP-initiated logout, and dynamic client registration.
+Resource indicators (RFC 8707), DPoP (RFC 9449), RP-initiated logout, and dynamic client registration.
 
 ## License
 

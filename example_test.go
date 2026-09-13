@@ -209,3 +209,26 @@ func ExampleAccessTokenEncoder() {
 	}
 	_ = cfg
 }
+
+// A custom pushed authorization request endpoint (RFC 9126) narrows requests
+// by policy before storing them. Config.PAR must enable pushed authorization
+// requests.
+func ExampleProvider_ParsePushedAuthorizationRequest() {
+	var provider *grantor.Provider // from grantor.New with Config.PAR set
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /oauth2/par", func(w http.ResponseWriter, r *http.Request) {
+		req, err := provider.ParsePushedAuthorizationRequest(r) // authenticates the client
+		if err != nil {
+			provider.WriteTokenError(w, r, err)
+			return
+		}
+		req.Scopes = slices.DeleteFunc(req.Scopes, func(s string) bool { return s == "admin" })
+		resp, err := provider.PushAuthorizationRequest(r, req)
+		if err != nil {
+			provider.WriteTokenError(w, r, err)
+			return
+		}
+		provider.WritePushedAuthorizationResponse(w, resp)
+	})
+}

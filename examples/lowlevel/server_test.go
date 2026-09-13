@@ -60,13 +60,26 @@ func TestLowLevelServer(t *testing.T) {
 		t.Fatalf("discovery = %v", meta)
 	}
 
-	authorize := func(loginHint string) url.Values {
+	if meta["pushed_authorization_request_endpoint"] != issuer+"/oauth2/par" {
+		t.Fatalf("discovery = %v", meta)
+	}
+
+	// authorize runs an authorization request, pushed first when push is set,
+	// and returns the parameters of the redirect with the code verifier.
+	authorize := func(loginHint string, push bool) url.Values {
 		t.Helper()
 		verifier := oauth2.GenerateVerifier()
 		q := url.Values{
 			"response_type": {"code"}, "client_id": {"cli"}, "redirect_uri": {"http://127.0.0.1/callback"},
 			"scope": {"openid api"}, "state": {"s"}, "code_challenge": {oauth2.S256ChallengeFromVerifier(verifier)},
 			"code_challenge_method": {"S256"}, "login_hint": {loginHint},
+		}
+		if push {
+			status, pushed := postForm(t, client, issuer+"/oauth2/par", q)
+			if status != http.StatusCreated {
+				t.Fatalf("push = %d %v", status, pushed)
+			}
+			q = url.Values{"client_id": {"cli"}, "request_uri": {pushed["request_uri"].(string)}}
 		}
 		resp, err := client.Get(issuer + "/oauth2/authorize?" + q.Encode())
 		if err != nil {
@@ -82,7 +95,7 @@ func TestLowLevelServer(t *testing.T) {
 		return v
 	}
 
-	result := authorize("alice")
+	result := authorize("alice", false)
 	if result.Get("code") == "" {
 		t.Fatalf("authorize = %v", result)
 	}
@@ -109,8 +122,21 @@ func TestLowLevelServer(t *testing.T) {
 		t.Fatalf("access token claims = %v", claims)
 	}
 
-	if result := authorize("mallory"); result.Get("error") != "access_denied" {
+	if result := authorize("mallory", false); result.Get("error") != "access_denied" {
 		t.Fatalf("disabled user = %v", result)
+	}
+
+	// The same flow with a pushed authorization request.
+	result = authorize("alice", true)
+	if result.Get("code") == "" || result.Get("state") != "s" {
+		t.Fatalf("authorize with PAR = %v", result)
+	}
+	status, tok = postForm(t, client, issuer+"/oauth2/token", url.Values{
+		"grant_type": {"authorization_code"}, "code": {result.Get("code")},
+		"client_id": {"cli"}, "redirect_uri": {"http://127.0.0.1/callback"}, "code_verifier": {result.Get("code_verifier")},
+	})
+	if status != http.StatusOK || tok["scope"] != "openid api" {
+		t.Fatalf("token with PAR = %d %v", status, tok)
 	}
 
 	status, apiKey := postForm(t, client, issuer+"/oauth2/token", url.Values{

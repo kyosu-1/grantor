@@ -52,6 +52,7 @@
 //   - RFC 9068 JWT access tokens, alongside opaque and custom formats
 //   - RFC 8414 authorization server metadata and RFC 9207 issuer identification
 //   - RFC 8252 loopback redirect URIs for native apps
+//   - RFC 9126 pushed authorization requests
 //   - OpenID Connect Core 1.0 (code flow), Discovery 1.0 and the Form Post
 //     Response Mode
 //   - client_secret_basic, client_secret_post, private_key_jwt (RFC 7523 and

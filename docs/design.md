@@ -86,6 +86,14 @@ Authorization codes, access tokens and refresh tokens are 43-character base64url
 
 Refresh tokens are issued when the client may use the refresh token grant and, for OpenID Connect requests, `offline_access` was granted (OpenID Connect Core §11).
 
+### Pushed authorization requests
+
+`Config.PAR` enables RFC 9126; it is off by default, so upgrading never exposes the endpoint. The PAR endpoint authenticates clients exactly like the token endpoint (public clients by `client_id`), requires `client_id` to name the authenticated client, rejects `request_uri`, and validates the rest like an authorization request, answering errors in JSON. Client assertions keep the issuer identifier as their only audience, as RFC 7523bis requires for PAR too.
+
+Pushed requests are stored with the existing authorization request methods under the ID `par:` plus a 256-bit random reference, which is also the random part of the `request_uri`. Pending request IDs are base64url and never contain a colon, and `AuthorizationRequest`, `Approve` and `Deny` refuse `par:` IDs, so a client cannot hand its `request_uri` to a login page as a pending request.
+
+At the authorization endpoint only `client_id` and `request_uri` are read. The pushed record must belong to the issuer and the client and be unexpired; it is deleted before use, which makes every `request_uri` single-use (RFC 9126 section 7.3) and resolves concurrent uses atomically. The request is then validated again against the current client registration (section 7.4) and continues as an ordinary, unsaved request with fresh timestamps, so `prompt=login` and `max_age` count from the browser's arrival. Errors before the redirect URI is known to be valid go to `Config.ErrorPage`; later ones are redirected. With `PARRequired` or `Client.RequirePushedAuthorizationRequests`, requests with their parameters in the URL are refused with `invalid_request`.
+
 ### Client authentication
 
 `client_secret_basic` (with form-decoding of credentials), `client_secret_post`, `private_key_jwt` and `none`. A request may only use one method. A client with a secret may send it with either secret method, since OAuth 2.1 §2.4.1 requires accepting it in the request body; otherwise the client must use its registered method. Client assertions accept asymmetric algorithms only, require `exp` and `jti`, expire within an hour, and are single-use through `Storage.ClaimOnce`. Following RFC 7523bis, which OAuth 2.1 adopts, their audience must be the issuer identifier as its only value; the token endpoint URL is rejected.
@@ -125,7 +133,7 @@ For the code flow, scope claims are returned from UserInfo and not put in the ID
 ## Not yet implemented
 
 - Request objects and `request_uri` (rejected with `request_not_supported` / `request_uri_not_supported`)
-- Pushed authorization requests, resource indicators, DPoP, mutual TLS
+- Resource indicators, DPoP, mutual TLS
 - Pairwise subject identifiers, session management and logout specifications
 - Dynamic client registration
 - A grace period for concurrent refresh token rotation
